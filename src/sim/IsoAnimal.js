@@ -12,7 +12,7 @@
 (function (Safari) {
     'use strict';
 
-    const { MathUtils, Config, Species, Events } = Safari;
+    const { MathUtils, Config, Species, Events, Vegetation } = Safari;
     const TAU = MathUtils.TAU;
 
     /**
@@ -50,6 +50,13 @@
      */
     const GRAZE_RATE = 0.42;
     const GRAZE_ENERGY = 0.30;
+
+    /**
+     * What a whole crown of acacia is worth, as a fraction of the browser's maximum
+     * energy. Richer than grass by weight — browse is leaves and pods rather than dry
+     * stems — which is what makes a stand of trees worth crossing the reserve for.
+     */
+    const BROWSE_ENERGY = 0.62;
 
     /**
      * How far a grazer will detour for a scattered pickup rather than eating the grass
@@ -149,6 +156,9 @@
             this.tranqTimer = 0;
             this.deathTimer = 0;
             this.eatTimer = 0;
+            /** Set while feeding from a tree; decays so the pose eases back down. */
+            this.browsing = 0;
+            this.targetTree = null;
 
             this.wanderAngle = this.facing;
             this.wanderTimer = 0;
@@ -162,7 +172,7 @@
             /** Mutated in place and handed to the renderer. */
             this.renderState = {
                 facing: this.facing, phase: this.phase, speed01: 0,
-                time: 0, seed: this.seed, headDown: 0, blink: 0, earFlick: 0
+                time: 0, seed: this.seed, headDown: 0, reach: 0, blink: 0, earFlick: 0
             };
         }
 
@@ -514,10 +524,23 @@
                 const near = ctx.nearestFood(this, 'plant', this.radius + PLANT_DETOUR);
                 if (near && near !== this.foodIgnore && this._takePlant(near, ctx)) return;
 
+                /*
+                 * A tree overhead beats the ground underfoot.
+                 *
+                 * Same reasoning as the pickup above: a crown within reach is worth
+                 * several mouthfuls of grass and the animal is already standing in it.
+                 * Walking to a distant tree is the last option rather than the first,
+                 * for the reason grazing comes before scattered forage — a browser that
+                 * marched at every acacia it could see would spend its life in transit.
+                 */
+                if (this._browse(dt, ctx, true)) return;
+
                 if (this._graze(dt, ctx)) return;
 
                 const far = ctx.nearestFood(this, 'plant', this.sense * 1.35);
                 if (far && far !== this.foodIgnore && this._takePlant(far, ctx)) return;
+
+                if (this._browse(dt, ctx, false)) return;
 
                 if (this._seekPasture(ctx)) return;
             }
@@ -681,6 +704,66 @@
          *
          * @returns {boolean} True if the animal is grazing and should not do anything else.
          */
+        /**
+         * Feed from an acacia.
+         *
+         * Only the tall browsers can: a giraffe takes the crown and an elephant the
+         * lower branches, and both are described that way in their own stats rather
+         * than being named here. Everything else on the reserve walks past a tree.
+         *
+         * Browsing matters to the ecology beyond flavour. Grass is a flat resource
+         * spread by moisture, so a herd of grazers drifts evenly across the plain;
+         * trees are a handful of rich points, so browsers gather at them, strip them
+         * over a day or two and have to move on. That gives the reserve somewhere the
+         * giraffes reliably are, which is both better to watch and better to hunt.
+         *
+         * @param {boolean} reachOnly True to feed only from a tree already in reach,
+         *   false to also walk to one.
+         * @returns {boolean} True if the animal is browsing, or on its way to browse.
+         */
+        _browse(dt, ctx, reachOnly) {
+            const veg = ctx.vegetation;
+            const rate = this.stats.browse;
+            if (!veg || !rate) return false;
+
+            // Calves reach what calves can reach.
+            const scale = this.isBaby ? 0.45 : 1;
+
+            let tree = this.targetTree;
+            if (tree && veg.foliageAt(tree, ctx.time) < 0.08) tree = this.targetTree = null;
+
+            if (!tree || !veg.inReach(tree, this.x, this.y, this.radius)) {
+                const near = veg.nearestTree(this.x, this.y,
+                    this.radius + Vegetation.BROWSE_REACH + 1, ctx.time);
+                if (near) tree = near;
+                else if (reachOnly) return false;
+                else tree = veg.nearestTree(this.x, this.y, this.sense * 2.2, ctx.time);
+            }
+            if (!tree) return false;
+
+            if (!veg.inReach(tree, this.x, this.y, this.radius)) {
+                if (reachOnly) return false;
+                this.targetTree = tree;
+                this.target = { x: tree.x, y: tree.y };
+                this._setState(State.FORAGE);
+                return true;
+            }
+
+            const taken = veg.consumeBrowse(tree, rate * scale * dt, ctx.time);
+            if (taken <= 0) {
+                this.targetTree = null;
+                return false;
+            }
+
+            this.targetTree = tree;
+            this.target = null;
+            this._setState(State.FORAGE);
+            this.feed(taken * BROWSE_ENERGY * this.maxEnergy);
+            this.speed = 0;
+            this.browsing = 1;
+            return true;
+        }
+
         _graze(dt, ctx) {
             const world = ctx.world;
             const available = world.grazeAt(this.x, this.y, ctx.time);
@@ -1069,9 +1152,23 @@
                 MathUtils.clamp01(this.speed / Math.max(0.01, this.runSpeed)), 8, dt);
             rs.seed = this.seed;
 
-            const down = (this.state === State.FORAGE && this.eatTimer > 0) ||
-                this.state === State.DRINK ? 1 :
-                (this.state === State.REST ? 0.4 : 0);
+            /*
+             * Reaching, rather than grazing.
+             *
+             * Feeding sets the same eat timer whether the food is on the ground or in a
+             * tree, so without this a giraffe browsing a crown put its head down into
+             * the dirt. The flag is set while it is actually taking foliage and decays
+             * after, which lets the neck ease back down rather than snapping.
+             */
+            this.browsing = Math.max(0, this.browsing - dt * 1.6);
+            const reaching = this.browsing > 0 ? 1 : 0;
+            this.reach = MathUtils.damp(this.reach || 0, reaching, 3, dt);
+            rs.reach = this.reach;
+
+            const down = reaching ? 0 :
+                (((this.state === State.FORAGE && this.eatTimer > 0) ||
+                    this.state === State.DRINK) ? 1 :
+                    (this.state === State.REST ? 0.4 : 0));
             this.headDown = MathUtils.damp(this.headDown, down, 3.5, dt);
             rs.headDown = this.headDown;
 

@@ -236,6 +236,72 @@ const results = await page.evaluate(() => {
         return 'worn ' + t.overlayData[k * 4] + ', burnt flagged';
     });
 
+    /* --- Browsing --------------------------------------------------------- */
+
+    check('the world owns the trees, and the renderer reads them', () => {
+        const veg = S.scene.vegetation;
+        assert(veg && veg.trees.length > 4, 'no trees in the world');
+        assert(S.scene.flora.props === veg.props, 'the renderer scattered its own props');
+        assert(S.scene.flora.crowns.size === veg.trees.length, 'a crown per tree');
+        return veg.trees.length + ' acacias';
+    });
+
+    check('a browser strips a crown and grows on it', () => {
+        const veg = S.scene.vegetation;
+        const tree = veg.trees[0];
+        tree.browse = 1;
+        tree.browseStamp = 0;
+
+        const a = S.spawn('giraffe', tree.x + 1.2, tree.y + 0.9);
+        assert(a, 'could not place a giraffe at the tree');
+        a.energy = a.maxEnergy * 0.3;
+        const before = a.energyRatio;
+
+        for (let i = 0; i < 240; i++) S.scene.update(1 / 30, 1);
+
+        const left = veg.foliageAt(tree, S.scene.simTime);
+        assert(left < 0.85, 'the crown was not browsed: ' + left.toFixed(2));
+        assert(a.energyRatio > before, 'the giraffe did not gain from it');
+        assert(a.reach > 0.5, 'it fed with its head down: reach ' + (a.reach || 0).toFixed(2));
+        return 'crown ' + left.toFixed(2) + ', energy ' +
+            before.toFixed(2) + ' -> ' + a.energyRatio.toFixed(2);
+    });
+
+    check('a grazer walks past the same tree', () => {
+        const veg = S.scene.vegetation;
+        const tree = veg.trees[1] || veg.trees[0];
+        tree.browse = 1;
+        tree.browseStamp = 0;
+        const z = S.spawn('zebra', tree.x + 1.0, tree.y + 0.8);
+        assert(z, 'could not place a zebra');
+        z.energy = z.maxEnergy * 0.3;
+        for (let i = 0; i < 120; i++) S.scene.update(1 / 30, 1);
+        const left = veg.foliageAt(tree, S.scene.simTime);
+        assert(left > 0.95, 'a zebra ate the canopy: ' + left.toFixed(2));
+        return 'crown untouched at ' + left.toFixed(2);
+    });
+
+    check('browsed crowns thin in the render, and grow back', () => {
+        const veg = S.scene.vegetation;
+        const tree = veg.trees[0];
+        const slot = S.scene.flora.crowns.get(tree);
+        assert(slot, 'tree has no crown instance');
+
+        tree.browse = 0;
+        tree.browseStamp = S.scene.simTime;
+        S.scene.flora._crownTimer = 0;
+        S.scene.flora.update(0.5, 1, S.scene.simTime);
+        const stripped = slot.foliage;
+
+        tree.browse = 1;
+        tree.browseStamp = 0;
+        S.scene.flora._crownTimer = 0;
+        S.scene.flora.update(0.5, 1, S.scene.simTime);
+        assert(stripped < 0.1, 'stripped crown still reads as full');
+        assert(slot.foliage > 0.9, 'regrown crown still reads as bare');
+        return 'crown ' + stripped.toFixed(2) + ' -> ' + slot.foliage.toFixed(2);
+    });
+
     /* --- Second run ------------------------------------------------------ */
 
     check('a second reserve builds cleanly over the first', () => {

@@ -57,7 +57,7 @@ const SHOTS = {
             S.step(90);
             S.hour(hour ?? 9.5);
             const a = S.find('zebra', 3.6) || S.scene.ecology.animals[0];
-            S.cam(a.x, a.y, 3.6, 1.4, 0.24);
+            S.cam(a.x, a.y, 3.8, 1.4, 0.34);
         }
     },
 

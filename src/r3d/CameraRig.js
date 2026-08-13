@@ -191,10 +191,14 @@
             const h = world ? R3D.groundY(world, this.focusX, this.focusY) : 0;
             this.focusH = MathUtils.damp(this.focusH, h, 8, dt);
 
-            this._place();
+            this._place(world);
         }
 
-        _place() {
+        /**
+         * @param {Safari.TileWorld} [world] Supplied so the camera can stay above the
+         *   ground it is looking at.
+         */
+        _place(world) {
             const cam = this.camera;
             const cp = Math.cos(this.pitch), sp = Math.sin(this.pitch);
             cam.position.set(
@@ -202,6 +206,22 @@
                 this.focusH + sp * this.dist,
                 this.focusY + Math.cos(this.yaw) * cp * this.dist
             );
+
+            /*
+             * Never below the ground.
+             *
+             * A free orbit can be pitched down to graze the horizon, and the moment the
+             * focus is anywhere near a rise that puts the camera inside the hill — the
+             * reserve turns inside out and the player is looking at the underside of the
+             * map. Lifting the eye rather than forcing the pitch keeps the subject
+             * framed where it was; the view just rides over the obstruction.
+             */
+            if (world) {
+                const floor = R3D.surfaceY(world, cam.position.x, cam.position.z) +
+                    Math.min(1.4, 0.25 + this.dist * 0.05);
+                if (cam.position.y < floor) cam.position.y = floor;
+            }
+
             cam.lookAt(this.focusX, this.focusH + this.dist * 0.06, this.focusY);
             cam.updateMatrixWorld();
         }

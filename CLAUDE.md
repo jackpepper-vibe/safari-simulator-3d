@@ -77,6 +77,25 @@ supply within a dozen runs.
 reserve, one instanced mesh per prop kind and variant, one for all the grass, one
 skinned mesh per animal. Adding a per-object material would quietly undo that.
 
+**Bodies are implicit surfaces.** `Surface3D` builds a distance field from blended
+primitives and polygonises it with surface nets. Anything that is one continuous mass on
+a real animal belongs in the field, not in a separate mesh — intersecting ellipsoids
+leave creases that read as visible seams from any angle the camera can reach. Two things
+to know: the polygoniser writes in *field space* and ignores the builder's transform
+stack, and quad winding is derived from the gradient normals rather than from the sign
+of the crossing, because getting it wrong per axis silently culls half the faces and the
+animal comes out full of holes.
+
+**Trees are simulation state.** `Vegetation` owns the prop scatter and the foliage the
+browsers eat, and lives in `src/world/`. `Flora3D` reads that list; it must never
+scatter its own, or the trees the giraffes are eating and the trees you can see will be
+different trees. Acacia crowns are a separate instanced mesh from their trunks purely so
+browsing can scale them.
+
+**The camera has a floor.** A free orbit pitched low near a rise puts the eye inside the
+hill and the reserve turns inside out. `CameraRig._place` lifts the eye above
+`surfaceY`; anything that repositions the camera has to go through it.
+
 ## Verification
 
 Screenshots and a smoke test. Do not describe a visual change as done by reasoning when

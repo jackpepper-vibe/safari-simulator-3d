@@ -23,7 +23,7 @@
 (function (Safari, THREE) {
     'use strict';
 
-    const { MathUtils, Noise, R3D } = Safari;
+    const { MathUtils, Noise, R3D, Surface3D } = Safari;
     const TAU = MathUtils.TAU;
     const PX = R3D.PX;
 
@@ -195,85 +195,135 @@
         /** Rest position of a bone in mesh space. The rig stores these absolute. */
         const abs = (name) => rest[rig.index[name]];
 
-        /* --- Torso ---------------------------------------------------------- */
+        /* --- The trunk, as one continuous surface ---------------------------- *
+         *
+         * Barrel, shoulder, haunch, neck, skull and muzzle are one mass on a real
+         * animal, so they are one surface here: added to a distance field, blended, and
+         * polygonised into a single skin with fillets at the joins. Drawn as separate
+         * ellipsoids — which is how this started — a hippo read as four lumps with a
+         * head balanced on them, and no amount of tessellation fixes that, because the
+         * creases are real geometry.
+         *
+         * The blend width is scaled to the animal: a fillet that flatters a rabbit
+         * would swallow an elephant's neck.
+         */
         const bodyPos = abs('body');
-        b.bone(rig.index.body).color(base);
-        b.push().translate(bodyPos.x, bodyPos.y, bodyPos.z);
-        const marks = markingFn(spec, base, (spec.id || '').length * 7 + 3);
-        b.sphere(body.length * 0.5 * PX, body.height * 0.5 * PX, body.width * 0.5 * PX,
-            marks ? { colorFn: marks, hi: true } : null);
-
-        // Shoulder and haunch masses. Without them a quadruped reads as one inflated
-        // balloon — the same trick the 2D silhouette used, in three dimensions.
-        // Marked species carry their markings onto the masses too, or a zebra ends up
-        // striped along the barrel and blank over the shoulder.
-        const massOpts = marks ? { colorFn: marks, hi: true } : LOW;
-        b.push().translate(body.length * 0.30 * PX, body.height * 0.10 * PX, 0)
-            .sphere(body.length * 0.24 * PX, body.height * 0.46 * PX, body.width * 0.54 * PX,
-                massOpts)
-            .pop();
-        b.push().translate(-body.length * 0.32 * PX, body.height * 0.06 * PX, 0)
-            .sphere(body.length * 0.25 * PX, body.height * 0.48 * PX, body.width * 0.56 * PX,
-                massOpts)
-            .pop();
-        b.pop();
-
-        /* --- Neck ----------------------------------------------------------- */
         const neckPos = abs('neck');
         const headPos = abs('head');
-        b.bone(rig.index.neck).color(base);
-        b.push().translate(neckPos.x, neckPos.y, neckPos.z);
-        b.limb(0, 0, 0,
-            headPos.x - neckPos.x, headPos.y - neckPos.y, headPos.z - neckPos.z,
-            neck.thickBase * 0.5 * PX, neck.thickTip * 0.5 * PX, { radial: 8 });
+        const marks = markingFn(spec, base, (spec.id || '').length * 7 + 3);
 
-        // A mane rides the top of the neck, which is most of what says "zebra" or
-        // "lion" at the distance the reserve is usually watched from.
-        if (spec.mane) {
-            b.color(maneCol);
-            const steps = 5;
-            for (let i = 0; i <= steps; i++) {
-                const t = i / steps;
-                b.push()
-                    .translate(
-                        (headPos.x - neckPos.x) * t,
-                        (headPos.y - neckPos.y) * t + spec.mane.height * 0.5 * PX,
-                        0)
-                    .sphere(spec.mane.thick * 0.42 * PX, spec.mane.height * 0.9 * PX,
-                        spec.mane.thick * 0.30 * PX, LOW)
-                    .pop();
-            }
+        const iBody = rig.index.body;
+        const iNeck = rig.index.neck;
+        const iHead = rig.index.head;
+        const bulk = Math.max(body.length, body.height) * PX;
+        const field = new Surface3D.Field(bulk * 0.26);
+
+        field.ellipsoid(iBody, bodyPos.x, bodyPos.y, bodyPos.z,
+            body.length * 0.5 * PX, body.height * 0.5 * PX, body.width * 0.5 * PX);
+
+        // Shoulder and haunch masses. Blended in, they stop reading as attached balls
+        // and start doing what they are for: keeping the barrel from being a balloon.
+        field.ellipsoid(iBody,
+            bodyPos.x + body.length * 0.30 * PX, bodyPos.y + body.height * 0.10 * PX, 0,
+            body.length * 0.24 * PX, body.height * 0.46 * PX, body.width * 0.54 * PX);
+        field.ellipsoid(iBody,
+            bodyPos.x - body.length * 0.32 * PX, bodyPos.y + body.height * 0.06 * PX, 0,
+            body.length * 0.25 * PX, body.height * 0.48 * PX, body.width * 0.56 * PX);
+
+        // Stubs where the legs leave the body, so a limb emerges from a haunch rather
+        // than being posted into a hole.
+        for (let i = 0; i < 4; i++) {
+            const anchor = i < 2 ? legs.front : legs.rear;
+            const lateral = (i % 2 === 0 ? 1 : -1) * anchor.spread;
+            field.ellipsoid(iBody, anchor.x * PX, anchor.z * PX, -lateral * PX,
+                legs.thickTop * 0.60 * PX, legs.thickTop * 0.72 * PX,
+                legs.thickTop * 0.48 * PX);
         }
-        b.pop();
 
-        /* --- Head ----------------------------------------------------------- */
-        b.bone(rig.index.head).color(base);
-        b.push().translate(headPos.x, headPos.y, headPos.z);
+        field.capsule(iNeck, neckPos.x, neckPos.y, neckPos.z,
+            headPos.x, headPos.y, headPos.z,
+            neck.thickBase * 0.5 * PX, neck.thickTip * 0.5 * PX);
 
-        // The lion's ruff sits behind the skull and is drawn first so the face is in
-        // front of it.
         if (spec.ruff) {
-            b.color(maneCol);
-            b.push().translate(-spec.ruff.radius * 0.28 * PX, 0, 0)
-                .sphere(spec.ruff.radius * 0.85 * PX, spec.ruff.radius * PX,
-                    spec.ruff.radius * PX, LOW)
-                .pop();
-            b.color(base);
+            field.ellipsoid(iHead,
+                headPos.x - spec.ruff.radius * 0.28 * PX, headPos.y, 0,
+                spec.ruff.radius * 0.85 * PX, spec.ruff.radius * PX, spec.ruff.radius * PX);
         }
 
+        // Head and muzzle offsets, relative to the head bone — the appendages below
+        // are still built in that bone's space.
         const hx = Math.cos(head.angle) * head.offset * PX;
         const hy = Math.sin(head.angle) * head.offset * PX;
-        b.push().translate(hx, hy, 0)
-            .sphere(head.length * 0.5 * PX, head.height * 0.5 * PX, head.width * 0.5 * PX, LOW)
-            .pop();
-
         const mz = head.muzzle;
         const mx = Math.cos(head.angle) * (head.offset + mz.offset) * PX;
         const my = Math.sin(head.angle) * (head.offset + mz.offset) * PX;
-        b.color(muzzleCol);
-        b.push().translate(mx, my, 0)
-            .sphere(mz.length * 0.5 * PX, mz.height * 0.5 * PX, mz.width * 0.5 * PX, LOW)
-            .pop();
+
+        field.ellipsoid(iHead, headPos.x + hx, headPos.y + hy, 0,
+            head.length * 0.5 * PX, head.height * 0.5 * PX, head.width * 0.5 * PX);
+        // A tighter blend on the muzzle: a soft one melts the face into the skull.
+        field.ellipsoid(iHead, headPos.x + mx, headPos.y + my, 0,
+            mz.length * 0.5 * PX, mz.height * 0.5 * PX, mz.width * 0.5 * PX, bulk * 0.09);
+
+        /*
+         * Where the hide changes colour on the finished skin.
+         *
+         * The markings were a function of position on the unit sphere the torso was
+         * scaled from. There is no such sphere any more, so they are evaluated in the
+         * same normalised body space, computed back from the mesh position. Muzzle,
+         * ruff and mane are regions of the one surface rather than separate meshes, so
+         * they are painted here too.
+         */
+        const bodyRX = body.length * 0.5 * PX;
+        const bodyRY = body.height * 0.5 * PX;
+        const bodyRZ = body.width * 0.5 * PX;
+        const maneReach = spec.mane ? spec.mane.thick * 0.75 * PX : 0;
+        const muzzleR = Math.max(mz.length, mz.height) * 0.5 * PX;
+        const neckRun = Math.max(1e-6,
+            (headPos.x - neckPos.x) * (headPos.x - neckPos.x) +
+            (headPos.y - neckPos.y) * (headPos.y - neckPos.y));
+
+        const skinColour = (x, y, z) => {
+            // The muzzle owns everything past the front of the skull.
+            const dm = Math.hypot(x - (headPos.x + mx), (y - (headPos.y + my)) * 0.85, z);
+            if (dm < muzzleR + bulk * 0.05) return _col.copy(muzzleCol);
+
+            if (spec.ruff) {
+                const dr = Math.hypot(x - (headPos.x - spec.ruff.radius * 0.28 * PX),
+                    y - headPos.y, z);
+                if (dr < spec.ruff.radius * 0.95 * PX) return _col.copy(maneCol);
+            }
+
+            // A mane rides the crest of the neck: close to the neck line, and above it.
+            if (maneReach) {
+                const t = MathUtils.clamp01(
+                    ((x - neckPos.x) * (headPos.x - neckPos.x) +
+                        (y - neckPos.y) * (headPos.y - neckPos.y)) / neckRun);
+                const cx = neckPos.x + (headPos.x - neckPos.x) * t;
+                const cy = neckPos.y + (headPos.y - neckPos.y) * t;
+                if (t > 0.02 && t < 0.98 && Math.abs(z) < maneReach && y > cy &&
+                    Math.hypot(x - cx, y - cy) < neck.thickBase * 0.6 * PX + maneReach) {
+                    return _col.copy(maneCol);
+                }
+            }
+
+            if (marks) {
+                return marks((x - bodyPos.x) / bodyRX, (y - bodyPos.y) / bodyRY, z / bodyRZ);
+            }
+            return _col.copy(base);
+        };
+
+        b.bone(iBody).color(base);
+        Surface3D.polygonise(b, field, {
+            // Cell size against the animal's own bulk, so a rabbit and an elephant are
+            // both resolved to about the same number of cells.
+            cell: bulk * 0.105,
+            colorFn: skinColour,
+            skinned: true
+        });
+
+        /* --- Appendages, in the head bone's space ---------------------------- */
+        b.bone(iHead).color(base);
+        b.push().translate(headPos.x, headPos.y, headPos.z);
 
         /* --- Horns, tusks and the trunk -------------------------------------- */
         if (spec.horns) {
@@ -619,7 +669,21 @@
         const graze = neck.grazeAngle === undefined ? -0.85 : neck.grazeAngle;
         const headDown = MathUtils.clamp01(st.headDown || 0);
         // Sedated animals put their heads down with everything else.
-        const wantAngle = MathUtils.lerp(neck.angle, graze, Math.max(headDown, down * 0.85));
+        let wantAngle = MathUtils.lerp(neck.angle, graze, Math.max(headDown, down * 0.85));
+
+        /*
+         * Browsing is the opposite of grazing, and has to look it.
+         *
+         * A browser reaching into a crown lifts its neck past the rest angle rather
+         * than lowering it, which is the whole silhouette of a giraffe at a tree. The
+         * ceiling keeps the neck short of vertical — a giraffe stretching straight up
+         * reads as alarmed, not as feeding.
+         */
+        const reach = MathUtils.clamp01(st.reach || 0);
+        if (reach > 0) {
+            wantAngle = MathUtils.lerp(wantAngle,
+                Math.min(neck.angle + 0.62, 1.42), reach);
+        }
         const neckDelta = wantAngle - neck.angle;
         const neckBone = bone('neck');
         neckBone.rotation.set(0, 0, neckDelta);
@@ -628,7 +692,7 @@
 
         // The head stays nearer level than the neck it hangs off, which is what a
         // grazing animal actually does and stops the muzzle pointing at its own knees.
-        headBone.rotation.set(0, 0, -neckDelta * 0.45);
+        headBone.rotation.set(0, 0, -neckDelta * 0.45 + reach * 0.35);
 
         const eyes = bone('eyes');
         eyes.scale.set(1, MathUtils.lerp(1, 0.08, MathUtils.clamp01(st.blink || 0)), 1);

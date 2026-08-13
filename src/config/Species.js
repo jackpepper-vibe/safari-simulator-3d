@@ -322,7 +322,13 @@
                 diet: 'herbivore',
                 walkSpeed: 25, runSpeed: 54, sense: 130, radius: 42,
                 maxEnergy: 230, energyDrain: 0.85, breedChance: 0.004,
-                huntable: false, threat: 0, turnRate: 1.5
+                huntable: false, threat: 0, turnRate: 1.5,
+                /*
+                 * An elephant works the lower branches rather than the crown, so it
+                 * takes less per tree than a giraffe — but with an appetite this size
+                 * it is the reason a stand of acacia goes bare.
+                 */
+                browse: 0.038
             },
             art: extend(QUADRUPED, {
                 scale: 1.16,
@@ -388,7 +394,17 @@
                 diet: 'herbivore',
                 walkSpeed: 38, runSpeed: 100, sense: 240, radius: 30,
                 maxEnergy: 145, energyDrain: 0.62, breedChance: 0.007,
-                huntable: true, threat: 0, turnRate: 2.2
+                huntable: true, threat: 0, turnRate: 2.2,
+                /*
+                 * Browsing.
+                 *
+                 * How much of an acacia's crown this animal can take per second. The
+                 * blurb above has always said a giraffe browses high; now it does. A
+                 * giraffe reaches the whole crown, which is the point of the neck, and
+                 * gets a good deal more out of a tree than an elephant working the
+                 * lower branches.
+                 */
+                browse: 0.055
             },
             art: extend(QUADRUPED, {
                 scale: 1.08,

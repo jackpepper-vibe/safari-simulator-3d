@@ -25,9 +25,25 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
 - **The animals are the rigs the 2D game already had.** `IsoSpecies` describes each
   species as anatomy in three dimensions — `fx` forward, `fy` left, `fz` up — because
   the isometric build projected it by hand. That data now builds a **skinned mesh**:
-  every primitive merged into one buffer, colour baked per vertex, each vertex bound to
-  one bone. A zebra is one draw call, and its stripes are a function of position on the
-  torso rather than a texture.
+  one merged buffer, colour baked per vertex, bound to a skeleton. A zebra is one draw
+  call, and its stripes are a function of position on the torso rather than a texture.
+
+- **A body is one surface, not a pile of parts.** Barrel, shoulder, haunch, neck, skull
+  and muzzle go into a signed distance field, are smooth-blended into each other, and
+  are polygonised once at build time with surface nets. Assembled from intersecting
+  ellipsoids — which is how this started — a hippo read as four visible lumps with a
+  head balanced on them, and tessellation cannot fix that because the creases are real
+  geometry. Skin weights come from the same field, so a vertex on the throat is shared
+  between body and neck and the neck still bends. Bushes and boulders get the same
+  treatment.
+
+- **Giraffes and elephants browse.** The acacias are a food supply rather than scenery,
+  so the scatter moved out of the renderer and into the world. A crown carries foliage
+  that depletes as it is browsed and grows back over about two in-game days; a browser
+  reaches up into it rather than putting its head down, and the crown visibly thins as
+  it goes. That gives the reserve a second kind of food with a completely different
+  shape to grass — a few rich points instead of an even field — so browsers gather,
+  strip a stand and move on, and the giraffes are reliably somewhere worth watching.
 
 - **The gait is the same gait.** Two-bone IK, a straight backward sweep in contact and a
   forward arc in the air, advanced by distance travelled so hooves never skate. The 2D

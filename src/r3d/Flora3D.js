@@ -17,9 +17,8 @@
 (function (Safari, THREE) {
     'use strict';
 
-    const { MathUtils, Rng, Config, TileWorld, R3D } = Safari;
-    const SUB = TileWorld.SUB;
-    const PROP = { ACACIA: 0, BUSH: 1, ROCK: 2, MOUND: 3 };
+    const { MathUtils, Rng, Config, Vegetation, R3D } = Safari;
+    const PROP = Vegetation.PROP;
 
     /**
      * Trees stand taller here than the 2D art drew them.
@@ -54,65 +53,7 @@
     const _quat = new THREE.Quaternion();
     const _scale = new THREE.Vector3();
     const _euler = new THREE.Euler();
-
-    /* ------------------------------------------------------------------ *
-     * Scatter
-     * ------------------------------------------------------------------ */
-
-    /**
-     * Place the large props across the reserve.
-     *
-     * Carried over from the 2D build unchanged apart from dropping the isometric depth
-     * key: same rejection sampling against the same fertility field from the same
-     * seeded generator, so the two builds of a given seed grow the same woodland.
-     */
-    function scatter(world, seed) {
-        const rng = new Rng((seed || 1) ^ 0x9E37);
-        const props = [];
-        const n = world.size;
-        const attempts = Math.floor(n * n * Config.terrain.propDensity);
-
-        for (let i = 0; i < attempts; i++) {
-            const tx = rng.range(1, n - 1);
-            const ty = rng.range(1, n - 1);
-            if (world.waterAt(tx, ty) > 0) continue;
-
-            const fert = world.fertilityAt(tx, ty);
-            const slope = world.slopeAt(tx, ty);
-            const sub = world.substrateAt(tx, ty);
-            const roll = rng.next();
-
-            let type = -1;
-            if (sub === SUB.ROCK || slope > 0.5) {
-                if (roll < 0.55) type = PROP.ROCK;
-                else if (roll < 0.72) type = PROP.BUSH;
-            } else if (fert > 0.55) {
-                if (roll < 0.11) type = PROP.ACACIA;
-                else if (roll < 0.62) type = PROP.BUSH;
-                else if (roll < 0.70) type = PROP.ROCK;
-            } else if (fert > 0.28) {
-                if (roll < 0.04) type = PROP.ACACIA;
-                else if (roll < 0.34) type = PROP.BUSH;
-                else if (roll < 0.44) type = PROP.ROCK;
-                else if (roll < 0.50) type = PROP.MOUND;
-            } else {
-                if (roll < 0.10) type = PROP.ROCK;
-                else if (roll < 0.17) type = PROP.MOUND;
-                else if (roll < 0.22) type = PROP.BUSH;
-            }
-            if (type < 0) continue;
-
-            props.push({
-                type,
-                x: tx,
-                y: ty,
-                variant: rng.int(0, 2),
-                yaw: rng.range(0, MathUtils.TAU),
-                scale: rng.range(0.8, 1.25)
-            });
-        }
-        return props;
-    }
+    const _c = new THREE.Color();
 
     /* ------------------------------------------------------------------ *
      * Prop geometry
@@ -125,7 +66,7 @@
      * savanna from a kilometre away — so the crown is built as overlapping flattened
      * lobes rather than a ball.
      */
-    function acacia(rng) {
+    function acaciaTrunk(rng) {
         const b = new R3D.GeoBuilder();
         const h = 1.02 * PROP_SCALE;
         const spread = 0.72 * PROP_SCALE * rng.range(0.85, 1.15);
@@ -144,56 +85,95 @@
                 0.045 * PROP_SCALE, 0.022 * PROP_SCALE, { radial: 6 });
         }
 
+        return b.build();
+    }
+
+    /**
+     * The crown, built separately from the trunk it sits on.
+     *
+     * Two meshes rather than one because the crown is a resource: browsers strip it and
+     * it grows back, and the only way an instanced tree can show that is if the part
+     * that changes has its own transform. Its geometry is centred on the crown height,
+     * so scaling an instance thins the canopy in place instead of sliding it down the
+     * trunk.
+     */
+    function acaciaCrown(rng) {
+        const b = new R3D.GeoBuilder();
+        const h = 1.02 * PROP_SCALE;
+        const spread = 0.72 * PROP_SCALE * rng.range(0.85, 1.15);
+
         b.color(PAL.canopy);
         const lobes = 4;
         for (let i = 0; i < lobes; i++) {
             const a = (i / lobes) * MathUtils.TAU + rng.spread(0.5);
             const r = spread * rng.range(0.30, 0.55);
             b.push()
-                .translate(Math.cos(a) * r, h * rng.range(0.98, 1.10), Math.sin(a) * r)
+                .translate(Math.cos(a) * r, h * (rng.range(0.98, 1.10) - 1.04),
+                    Math.sin(a) * r)
                 .sphere(spread * rng.range(0.45, 0.62), 0.19 * PROP_SCALE,
                     spread * rng.range(0.45, 0.62), { low: true })
                 .pop();
         }
         // A lit cap on top so the crown is not one flat tone from above.
         b.color(PAL.canopyLight);
-        b.push().translate(0, h * 1.14, 0)
+        b.push().translate(0, h * 0.10, 0)
             .sphere(spread * 0.62, 0.11 * PROP_SCALE, spread * 0.62, { low: true })
             .pop();
 
-        return b.build();
+        const geo = b.build();
+        geo.userData.crownY = h * 1.04;
+        return geo;
     }
 
-    /** Scrub: a cluster of low mounds, denser at the base. */
+    /**
+     * Scrub: one blended mass rather than a cluster of balls.
+     *
+     * Same treatment as the animals, for the same reason. A bush built as overlapping
+     * spheres reads as overlapping spheres from any angle the camera can now reach, and
+     * there are hundreds of them in shot at once.
+     */
     function bush(rng) {
         const b = new R3D.GeoBuilder();
         const s = 0.30 * PROP_SCALE;
+        // Enough blend to lose the seams, not so much that scrub inflates into a
+        // single smooth boulder — a bush should still read as a clump.
+        const field = new Safari.Surface3D.Field(s * 0.30);
         const n = 3 + (rng.next() < 0.5 ? 1 : 0);
         for (let i = 0; i < n; i++) {
-            b.color(i === 0 ? PAL.bush : (rng.next() < 0.4 ? PAL.bushLight : PAL.bush));
             const r = s * rng.range(0.55, 1.0);
-            b.push()
-                .translate(rng.spread(s * 1.1), r * rng.range(0.55, 0.8), rng.spread(s * 1.1))
-                .sphere(r * 1.25, r, r * 1.25, { low: true })
-                .pop();
+            field.ellipsoid(0,
+                rng.spread(s * 1.1), r * rng.range(0.55, 0.8), rng.spread(s * 1.1),
+                r * 1.25, r, r * 1.25);
         }
+        b.color(PAL.bush);
+        Safari.Surface3D.polygonise(b, field, {
+            cell: s * 0.30,
+            // Sunlit at the crown, shaded underneath: the one cue that stops a blended
+            // mass reading as a green pebble.
+            colorFn: (x, y) => _c.copy(PAL.bush)
+                .lerp(PAL.bushLight, MathUtils.clamp01(y / (s * 1.4)))
+        });
         return b.build();
     }
 
-    /** A boulder: overlapping angular masses, flattened to sit into the ground. */
+    /** A boulder: one weathered mass, flattened to sit into the ground. */
     function rock(rng) {
         const b = new R3D.GeoBuilder();
         const s = 0.26 * PROP_SCALE;
+        const field = new Safari.Surface3D.Field(s * 0.35);
         const n = 2 + (rng.next() < 0.6 ? 1 : 0);
         for (let i = 0; i < n; i++) {
-            b.color(i === 0 ? PAL.rock : (rng.next() < 0.5 ? PAL.rockLight : PAL.rockDark));
             const r = s * rng.range(0.6, 1.05);
-            b.push()
-                .translate(rng.spread(s * 0.7), r * 0.45, rng.spread(s * 0.7))
-                .rotate(rng.spread(0.4), rng.range(0, 3), rng.spread(0.4))
-                .sphere(r * 1.15, r * 0.78, r, { low: true })
-                .pop();
+            field.ellipsoid(0,
+                rng.spread(s * 0.7), r * 0.45, rng.spread(s * 0.7),
+                r * 1.15, r * 0.78, r);
         }
+        b.color(PAL.rock);
+        Safari.Surface3D.polygonise(b, field, {
+            cell: s * 0.26,
+            colorFn: (x, y) => _c.copy(PAL.rockDark)
+                .lerp(PAL.rockLight, MathUtils.clamp01(0.35 + y / (s * 1.6)))
+        });
         return b.build();
     }
 
@@ -216,7 +196,7 @@
         return b.build();
     }
 
-    const BUILDERS = [acacia, bush, rock, mound];
+    const BUILDERS = [acaciaTrunk, bush, rock, mound];
     const VARIANTS = 3;
 
     /* ------------------------------------------------------------------ *
@@ -254,14 +234,21 @@
          * @param {THREE.Scene} scene
          * @param {number} seed
          * @param {THREE.Texture} overlay Terrain's graze/burn texture.
+         * @param {Safari.Vegetation} vegetation The world's standing vegetation. The
+         *   scatter lives there now, because the acacias are food rather than scenery.
          */
-        constructor(world, scene, seed, overlay) {
+        constructor(world, scene, seed, overlay, vegetation) {
             this.world = world;
             this.scene = scene;
             this.overlay = overlay;
+            this.vegetation = vegetation;
             this.meshes = [];
 
-            this.props = scatter(world, seed);
+            this.props = vegetation.props;
+            /** Crown instances, so browsing can thin them: tree → {mesh, index}. */
+            this.crowns = new Map();
+            this._crownTimer = 0;
+
             this._buildProps(seed);
             this._buildGroundCover(seed);
         }
@@ -270,7 +257,7 @@
             const world = this.world;
 
             // One instanced mesh per kind and variant: four kinds, three variants, so
-            // the whole reserve's vegetation is twelve draw calls.
+            // the whole reserve's vegetation is a dozen draw calls.
             const buckets = new Map();
             for (const p of this.props) {
                 const key = p.type * VARIANTS + p.variant;
@@ -299,7 +286,51 @@
                 mesh.frustumCulled = false;
                 this.scene.add(mesh);
                 this.meshes.push(mesh);
+
+                if (type === PROP.ACACIA) this._buildCrowns(key, list, seed);
             }
+        }
+
+        /**
+         * The crowns, on their own instanced mesh so browsing can thin them.
+         *
+         * Each tree's crown carries a scale that follows the foliage the simulation says
+         * it has left, which is what makes a browsed stand visibly bare and a recovered
+         * one visibly full — the same idea as the grass shrinking over grazed ground,
+         * one level up.
+         */
+        _buildCrowns(key, list, seed) {
+            const world = this.world;
+            const geo = acaciaCrown(new Rng(key * 977 + seed));
+            const mesh = new THREE.InstancedMesh(geo, R3D.solidMaterial(), list.length);
+            mesh.castShadow = true;
+            mesh.frustumCulled = false;
+
+            for (let i = 0; i < list.length; i++) {
+                const p = list[i];
+                p._crownBase = R3D.surfaceY(world, p.x, p.y) - 0.04;
+                this.crowns.set(p, { mesh, index: i, foliage: -1 });
+                this._placeCrown(p, mesh, i, 1);
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+            this.scene.add(mesh);
+            this.meshes.push(mesh);
+        }
+
+        /** @param {number} foliage 0..1 of the crown remaining. */
+        _placeCrown(p, mesh, index, foliage) {
+            const geo = mesh.geometry;
+            const crownY = geo.userData.crownY * p.scale;
+            // A stripped crown thins rather than vanishing: browsers take the leaves,
+            // not the branches, and a tree that disappeared would read as felled.
+            const thin = 0.34 + 0.66 * foliage;
+            _pos.set(p.x, p._crownBase + crownY, p.y);
+            _euler.set(0, p.yaw, 0);
+            _quat.setFromEuler(_euler);
+            _scale.set(p.scale * (0.8 + 0.2 * foliage), p.scale * thin,
+                p.scale * (0.8 + 0.2 * foliage));
+            _m.compose(_pos, _quat, _scale);
+            mesh.setMatrixAt(index, _m);
         }
 
         /**
@@ -405,12 +436,31 @@
             return mat;
         }
 
-        update(dt, wind) {
+        /**
+         * @param {number} now Simulated seconds, for foliage regrowth.
+         */
+        update(dt, wind, now) {
             if (this.grass) {
                 const u = this.grass.material.userData.uniforms;
                 u.uTime.value += dt;
                 u.uWind.value = wind;
             }
+
+            // Crowns change over minutes, not frames, so they are checked on a cadence
+            // and only rewritten when the foliage has actually moved.
+            this._crownTimer -= dt;
+            if (this._crownTimer > 0 || !this.vegetation) return;
+            this._crownTimer = 0.4;
+
+            const dirty = new Set();
+            for (const [tree, slot] of this.crowns) {
+                const foliage = this.vegetation.foliageAt(tree, now);
+                if (Math.abs(foliage - slot.foliage) < 0.02) continue;
+                slot.foliage = foliage;
+                this._placeCrown(tree, slot.mesh, slot.index, foliage);
+                dirty.add(slot.mesh);
+            }
+            for (const mesh of dirty) mesh.instanceMatrix.needsUpdate = true;
         }
 
         dispose() {
@@ -423,7 +473,6 @@
     }
 
     Flora3D.PROP = PROP;
-    Flora3D.scatter = scatter;
     Safari.Flora3D = Flora3D;
 
 })(window.Safari, window.THREE);

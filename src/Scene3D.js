@@ -18,7 +18,7 @@
     const {
         MathUtils, Rng, Config, Palettes, EventBus, Events,
         TileWorld, IsoSpecies, IsoEcology, IsoRanger, IsoAnimal, IsoEvents,
-        Relocation, TimeSystem, Weather,
+        Relocation, TimeSystem, Weather, Vegetation,
         R3D, Terrain3D, Flora3D, Sky3D, Creature3D, Models3D, Particles3D, CameraRig
     } = Safari;
 
@@ -82,6 +82,15 @@
             this.world = new TileWorld(Config.terrain.tiles, this.seed);
             this.world.generate();
 
+            /**
+             * Standing vegetation, in the world rather than in the renderer.
+             *
+             * The acacias are a food supply for the tall browsers, so the simulation has
+             * to know where they are; the renderer reads this list rather than owning
+             * one of its own.
+             */
+            this.vegetation = new Vegetation(this.world, this.seed);
+
             this.camera = new CameraRig(this.world.size);
             /** The overlay's name for the same object. */
             this.rig = this.camera;
@@ -91,6 +100,7 @@
             this.time = new TimeSystem(this.bus);
             this.weather = new Weather(this.bus, this.seed);
             this.ecology = new IsoEcology(this.bus, this.world, this.seed);
+            this.ecology.ctx.vegetation = this.vegetation;
             this.agents = this.ecology.animals;
 
             this.ranger = new IsoRanger(this.world.size / 2, this.world.size / 2);
@@ -116,8 +126,9 @@
 
             /* --- Presentation ----------------------------------------------- */
             this.terrain = new Terrain3D(this.world, this.scene);
-            this.flora = new Flora3D(this.world, this.scene, this.seed, this.terrain.overlay);
-            this.props = this.flora.props;
+            this.flora = new Flora3D(this.world, this.scene, this.seed,
+                this.terrain.overlay, this.vegetation);
+            this.props = this.vegetation.props;
             this.sky = new Sky3D(this.scene, this.world.size, new Rng(this.seed ^ 0x51));
             this.particles = new Particles3D(this.scene, this.seed);
 
@@ -497,6 +508,12 @@
                 this.world.regrowthScale = this.events.regrowthScale;
                 this.world.drawdown = this.events.waterDrawdown;
 
+                // A fire takes the crowns in its path with the grass, or a burnt scar
+                // stays full of untouched browse.
+                for (const cell of this.events.fire.burning.values()) {
+                    this.vegetation.scorch(cell.x, cell.y, 1.4, this.simTime);
+                }
+
                 this._emitEffects(sim);
             }
 
@@ -505,7 +522,7 @@
             this.wind = this.weather.wind;
 
             this.terrain.update(dt, this.simTime, this.events.fire.burnt);
-            this.flora.update(dt, this.wind);
+            this.flora.update(dt, this.wind, this.simTime);
             this.particles.update(dt, this.wind, this._fireCentre());
             this.particles.motes(dt, this.camera, this.light);
             this.sky.update(this.light, this.camera, dt, this.wind);
