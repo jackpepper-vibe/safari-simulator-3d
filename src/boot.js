@@ -128,13 +128,20 @@
                 return this;
             },
 
-            /** Park the camera: focus tile, distance, yaw and pitch in radians. */
+            /**
+             * Park the camera: focus tile, distance, yaw and pitch in radians.
+             *
+             * Settled rather than placed. The rig damps its focus height toward the
+             * ground so that panning onto a plateau lifts the view smoothly, which
+             * means a single update leaves the camera most of the way back at wherever
+             * it was — and a shot framed on the old height misses the subject.
+             */
             cam(tx, ty, dist, yaw, pitch) {
                 const c = scene().camera;
                 c.snapToTile(tx, ty, dist);
                 if (yaw !== undefined) c.yaw = c.targetYaw = yaw;
                 if (pitch !== undefined) c.pitch = c.targetPitch = pitch;
-                c.update(0.016, scene().world);
+                for (let i = 0; i < 40; i++) c.update(0.05, scene().world);
                 return this;
             },
 

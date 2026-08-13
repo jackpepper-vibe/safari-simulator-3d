@@ -45,6 +45,12 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
   shape to grass — a few rich points instead of an even field — so browsers gather,
   strip a stand and move on, and the giraffes are reliably somewhere worth watching.
 
+- **Species read as themselves.** A lion's mane is a ring of overlapping masses in the
+  surface with tufts over them, because what identifies a lion at fifty metres is a
+  broken outline; a crocodile's back and tail carry rows of keeled scutes, projected onto
+  the skin rather than positioned by arithmetic, because a blended croc without them is a
+  green torpedo.
+
 - **Faces are built, not implied.** A jaw under the muzzle gives a mouth crease rather
   than a snout; nostrils and a mouth line are painted onto the finished skin; and eyes
   and ears are placed by casting a ray from the middle of the skull until it meets the

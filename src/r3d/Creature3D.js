@@ -245,9 +245,38 @@
             neck.thickBase * 0.5 * PX, neck.thickTip * 0.5 * PX);
 
         if (spec.ruff) {
-            field.ellipsoid(iHead,
-                headPos.x - spec.ruff.radius * 0.28 * PX, headPos.y, 0,
-                spec.ruff.radius * 0.85 * PX, spec.ruff.radius * PX, spec.ruff.radius * PX);
+            const ruff = spec.ruff;
+            const rcx = headPos.x - ruff.radius * 0.30 * PX;
+            // A tight blend, so the ruff sits against the head instead of merging with
+            // it. On the default fillet a lion came out as one smooth orange ball.
+            field.ellipsoid(iHead, rcx, headPos.y, 0,
+                ruff.radius * 0.80 * PX, ruff.radius * PX, ruff.radius * PX,
+                bulk * 0.06);
+
+            /*
+             * A ring of lumps around the collar.
+             *
+             * The first attempt at a mane was long strands radiating from the ruff,
+             * which read as a sea urchin rather than as hair. What a mane actually does
+             * to a silhouette is thicken and roughen it, so it is built as overlapping
+             * masses in the surface itself — volume first, with a few short tufts over
+             * the top to break the edge.
+             */
+            if (ruff.lumps) {
+                const inner = ruff.radius * ruff.inset * PX;
+                for (let i = 0; i < ruff.lumps; i++) {
+                    const a = (i / ruff.lumps) * TAU;
+                    const wobble = 1 + Math.sin(i * 2.3) * 0.22;
+                    field.ellipsoid(iHead,
+                        rcx - ruff.lump * 0.18 * PX * (i % 2),
+                        headPos.y + Math.sin(a) * inner,
+                        Math.cos(a) * inner,
+                        ruff.lump * 0.42 * PX * wobble,
+                        ruff.lump * 0.5 * PX * wobble,
+                        ruff.lump * 0.5 * PX * wobble,
+                        bulk * 0.045);
+                }
+            }
         }
 
         // Head and muzzle offsets, relative to the head bone — the appendages below
@@ -335,9 +364,11 @@
             if (ex * ex + ey * ey + ez * ez < 1.2) return _col.copy(muzzleCol);
 
             if (spec.ruff) {
-                const dr = Math.hypot(x - (headPos.x - spec.ruff.radius * 0.28 * PX),
+                // Wide enough to take in the lumps, or the mane is a dark collar with a
+                // pale fringe of its own edge.
+                const dr = Math.hypot(x - (headPos.x - spec.ruff.radius * 0.30 * PX),
                     y - headPos.y, z);
-                if (dr < spec.ruff.radius * 0.95 * PX) return _col.copy(maneCol);
+                if (dr < spec.ruff.radius * 1.16 * PX) return _col.copy(maneCol);
             }
 
             // A mane rides the crest of the neck: close to the neck line, and above it.
@@ -490,6 +521,33 @@
             b.pop();
         }
 
+        /* --- The mane ---------------------------------------------------------- *
+         *
+         * A collar of tapered strands around the ruff, raked back. Drawn rather than
+         * blended, because what identifies a lion at fifty metres is the broken
+         * outline, and a blended mass has no outline to break.
+         */
+        if (spec.ruff && spec.ruff.strands) {
+            const ruff = spec.ruff;
+            const cx = headPos.x - ruff.radius * 0.30 * PX;
+            const cy = headPos.y;
+            b.bone(iHead).color(maneCol);
+            const outer = ruff.radius * (ruff.inset || 0.8) * PX + ruff.lump * 0.3 * PX;
+            for (let i = 0; i < ruff.strands; i++) {
+                const a = (i / ruff.strands) * TAU + (i % 2) * 0.18;
+                const uy = Math.sin(a);
+                const uz = Math.cos(a);
+                const len = ruff.length * PX * (0.75 + (i % 3) * 0.18);
+                // Tufts sweep back along the body as well as outward, which is what
+                // stops a mane reading as a sunflower.
+                b.limb(
+                    cx, cy + uy * outer * 0.9, uz * outer * 0.9,
+                    cx - ruff.rake * len, cy + uy * (outer + len), uz * (outer + len),
+                    ruff.thick * 0.5 * PX, ruff.thick * 0.18 * PX,
+                    { radial: 4, noCaps: true });
+            }
+        }
+
         /* --- Ears and eyes ---------------------------------------------------- */
         if (spec.ear) {
             const ear = spec.ear;
@@ -559,6 +617,64 @@
                 .pop();
         }
         b.pop();
+
+        /* --- Scutes -------------------------------------------------------------- *
+         *
+         * Keeled plates along the spine and the tail. They belong to whichever bone
+         * carries the part they sit on, so the tail's row swings with the tail.
+         */
+        if (spec.scutes) {
+            const sc = spec.scutes;
+            const scuteCol = R3D.col(sc.color);
+
+            b.bone(iBody).color(scuteCol);
+            for (let row = 0; row < sc.rows; row++) {
+                // The middle row runs the length of the back; the flanking rows are
+                // shorter and set lower, as they are on the animal.
+                const lateral = (row - (sc.rows - 1) / 2) * sc.spread;
+                const flank = Math.abs(lateral) > 0.01;
+                const inset = flank ? 0.72 : 1;
+                const size = sc.size * (flank ? 0.72 : 1);
+                const from = body.length * 0.42 * inset;
+                const to = -body.length * 0.48 * inset;
+                const steps = Math.max(2, Math.round((from - to) / sc.spacing));
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const x = from + (to - from) * t;
+                    /*
+                     * Sit each scute on the skin, not on the ellipsoid it was measured
+                     * from. The blend inflates the back above the barrel it started as,
+                     * so a row placed by arithmetic ends up inside the animal — which is
+                     * why the first pass gave the crocodile an armoured tail and a bare
+                     * back.
+                     */
+                    field.project(x * PX, body.z * PX, -lateral * PX,
+                        flank ? Math.sign(-lateral) * 0.55 : 0, 1, 0, hit,
+                        body.height * 3 * PX);
+                    b.push()
+                        .translate(hit[0], hit[1] - size * 0.22 * PX, hit[2])
+                        .rotate(0, 0, -0.18)
+                        .cone(size * 0.5 * PX, size * PX, LOW)
+                        .pop();
+                }
+            }
+
+            const tsc = sc.tail || sc;
+            const tailLen = Math.hypot(tEndX, tEndY);
+            const tailSteps = Math.max(2, Math.round(tailLen / (tsc.spacing * PX)));
+            b.bone(rig.index.tail);
+            b.push().translate(tailPos.x, tailPos.y, tailPos.z);
+            for (let i = 0; i <= tailSteps; i++) {
+                const t = i / tailSteps;
+                const taper = 1 - t * 0.72;
+                b.push()
+                    .translate(tEndX * t, tEndY * t + tail.thick * 0.34 * PX * taper, 0)
+                    .rotate(0, 0, -0.18)
+                    .cone(tsc.size * 0.45 * PX * taper, tsc.size * PX * taper, LOW)
+                    .pop();
+            }
+            b.pop();
+        }
 
         /* --- Legs ---------------------------------------------------------------- */
         for (let i = 0; i < 4; i++) {

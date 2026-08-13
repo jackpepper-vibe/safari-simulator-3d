@@ -125,7 +125,7 @@
             id: 'lion', label: 'Lion', diet: 'carnivore',
             palette: {
                 base: '#c99257', limb: '#bf884e', hoof: '#7d5730',
-                muzzle: '#e4cda2', mane: '#7d4a20', eye: '#241408'
+                muzzle: '#e4cda2', mane: '#6b3a15', eye: '#241408'
             },
             body: { x: 0, z: 20, length: 25, width: 9, height: 11 },
             neck: { x: 17, z: 24, length: 8, angle: 0.34, thickBase: 13, thickTip: 11 },
@@ -134,8 +134,21 @@
                 length: 8.5, width: 6.5, height: 6.5,
                 muzzle: { offset: 5.5, length: 4.4, width: 3.8, height: 3.4 }
             },
-            /** The ruff is what makes a lion read as a lion at any distance. */
-            ruff: { radius: 11 },
+            /**
+             * The ruff is what makes a lion read as a lion at any distance.
+             *
+             * `strands` is what makes it read as a *mane* rather than as a larger head.
+             * Blended into the skull it only ever produced a bigger ball; the ragged
+             * outline is the whole signal, so it is drawn as a collar of tapered
+             * strands around a ruff that keeps its own edge.
+             */
+            ruff: {
+                radius: 10,
+                /** Overlapping lumps around the collar, which give it a shaggy edge. */
+                lumps: 13, lump: 4.2, inset: 0.80,
+                /** Short tufts over the lumps, to break the outline without spiking it. */
+                strands: 18, length: 2.8, thick: 2.8, rake: 0.35
+            },
             ear: { offset: -1, rise: 3.4, spread: 3, length: 3, thick: 3 },
             eye: { offset: 3.4, rise: 1.4, spread: 3, radius: 1.1 },
             legs: {
@@ -219,6 +232,20 @@
                 sprawl: 4.5
             },
             tail: { rise: 1, angle: 0.02, length: 26, thick: 7, tip: 0.8, droop: 0.25, tuft: 0 },
+            /**
+             * Osteoderms.
+             *
+             * A crocodile's back is armour, and without it the animal is a smooth green
+             * torpedo — which is exactly what a blended surface makes of it. Three rows
+             * of keeled scutes down the body and a single ridge along the tail put the
+             * texture back into the silhouette, which is where it matters: a croc is
+             * usually seen as a shape lying half in the water.
+             */
+            scutes: {
+                color: '#3f4a2a',
+                rows: 3, spacing: 3.2, size: 2.8, spread: 3.2,
+                tail: { rows: 1, spacing: 2.4, size: 2.6 }
+            },
             gait: { type: 'sprawl', stride: 7, lift: 2, bodyBob: 0.6,
                 phases: [0, 0.5, 0.5, 0] }
         }),

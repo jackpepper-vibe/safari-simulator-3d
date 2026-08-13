@@ -86,6 +86,19 @@ stack, and quad winding is derived from the gradient normals rather than from th
 of the crossing, because getting it wrong per axis silently culls half the faces and the
 animal comes out full of holes.
 
+**Anything that sits on the skin gets projected onto it.** `Field.project` casts a ray
+from a point known to be *inside* the animal until it meets the surface; eyes, ears and
+the crocodile's scutes are all placed that way. Positions worked out by arithmetic from
+the rig end up buried, because the blend inflates the surface above the primitives it
+was measured from — that is exactly how the crocodile came to have an armoured tail and
+a bare back. Start the ray anywhere that might be outside and it finds no crossing at
+all, and the feature hangs in the air beside the animal.
+
+**A silhouette is made of masses, not spikes.** The lion's mane is a ring of overlapping
+lumps *in the field* with short tufts over them. Built as long radiating strands it read
+as a sea urchin; built as a smooth ruff it read as a bigger head. Both are worth
+remembering when adding a feature whose whole job is to be recognised at distance.
+
 **Faces need a jaw.** Barrel-neck-head-muzzle in a single blend is a monotonic taper
 and every species comes out with the same snout. `Creature3D` adds a jaw ellipsoid on a
 tight blend, paints nostrils and a mouth line onto the skin, and places eyes and ears by
@@ -130,7 +143,12 @@ node C:/Claude/Tools/shot/shot.mjs ./index.html --viewport 1280x800 --wait 3500 
 ```
 
 `scripts/smoke.mjs` is the one that matters after touching input: the fork rewrote every
-path between the pointer and the simulation, and none of it shows up in a screenshot.
+path between the pointer and the simulation, and none of it shows up in a screenshot. It
+stops the game's ticker before asserting anything — the page's own frame loop used to
+race it, and a run that reached its tenure mid-test made the shell ignore clicks, which
+failed the input checks for a reason that had nothing to do with input. Any new check
+should advance the world with `S.step()` and assert on what it asked for, not on a
+snapshot of an animal that may have moved on.
 
 ## What is still 2D on purpose
 
