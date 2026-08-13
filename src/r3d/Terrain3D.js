@@ -368,9 +368,17 @@
         /**
          * The pool surfaces.
          *
-         * Only quads with water at a corner are emitted, so the mesh is a few hundred
-         * triangles rather than the whole map, and the shoreline is the real edge of
-         * the water field rather than a painted boundary.
+         * **Water is level.** That sounds too obvious to state, and it is the whole
+         * fix: the first version put each surface vertex at the ground height beneath
+         * it, which meets the terrain perfectly at the shoreline and is wrong
+         * everywhere else. A pool lying across any slope became a tilted sheet, and any
+         * rise inside its outline stood up through the water — lakes with mountains in
+         * them.
+         *
+         * So the pools are found as connected regions first, each is given one surface
+         * height, and the mesh is emitted only where the ground is actually below that
+         * height. Ground that is above it stops being a mountain in a lake and becomes
+         * what it always was: an island, or the bank.
          */
         _buildWater() {
             const w = this.world;
@@ -378,6 +386,73 @@
             const step = 1 / RES;
             const verts = n * RES + 1;
 
+            /* --- Find the pools ------------------------------------------ */
+            const region = new Int32Array(n * n).fill(-1);
+            const levels = [];
+            const stack = [];
+
+            for (let ty = 0; ty < n; ty++) {
+                for (let tx = 0; tx < n; tx++) {
+                    const k = ty * n + tx;
+                    if (region[k] >= 0) continue;
+                    if (R3D.waterCarve(w, tx + 0.5, ty + 0.5) <= 0.01) continue;
+
+                    // Flood fill this pool, collecting the ground under it as we go.
+                    const id = levels.length;
+                    const heights = [];
+                    stack.length = 0;
+                    stack.push(k);
+                    region[k] = id;
+
+                    while (stack.length) {
+                        const c = stack.pop();
+                        const cx = c % n;
+                        const cy = (c / n) | 0;
+                        heights.push(R3D.surfaceY(w, cx + 0.5, cy + 0.5));
+
+                        for (let d = 0; d < 4; d++) {
+                            const nx = cx + (d === 0 ? 1 : d === 1 ? -1 : 0);
+                            const ny = cy + (d === 2 ? 1 : d === 3 ? -1 : 0);
+                            if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
+                            const nk = ny * n + nx;
+                            if (region[nk] >= 0) continue;
+                            if (R3D.waterCarve(w, nx + 0.5, ny + 0.5) <= 0.01) continue;
+                            region[nk] = id;
+                            stack.push(nk);
+                        }
+                    }
+
+                    /*
+                     * The surface height for the pool: the brim of its own basin.
+                     *
+                     * Measured against the *carved* terrain, not the ground the carve
+                     * was subtracted from. The basin meets the untouched ground at the
+                     * shoreline, so an upper percentile of the carved surface is the rim
+                     * — fill to there and the water reaches the bank and stops. Taking
+                     * it from the uncarved ground instead sets the level a whole basin
+                     * depth too high, and the pool spreads a thin film over every flat
+                     * acre around it, which is what the first attempt did.
+                     *
+                     * A percentile rather than the maximum, because one high tile at the
+                     * edge should not raise the whole lake.
+                     */
+                    heights.sort((a, b) => a - b);
+                    const pick = heights[Math.min(heights.length - 1,
+                        Math.floor(heights.length * 0.86))];
+                    levels.push(pick);
+                }
+            }
+
+            if (!levels.length) {
+                if (this.water) {
+                    this.scene.remove(this.water);
+                    this.water.geometry.dispose();
+                    this.water = null;
+                }
+                return;
+            }
+
+            /* --- Emit a level surface over each ---------------------------- */
             const positions = [];
             const colors = [];
             const indices = [];
@@ -386,51 +461,65 @@
             const shallow = R3D.col('#5f9fae');
             const deep = R3D.col('#245c70');
 
-            const vertexAt = (i, j) => {
+            /** Which pool a sub-grid point belongs to, searching a tile either way. */
+            const regionAt = (i, j) => {
+                const tx = Math.min(n - 1, Math.max(0, Math.floor(i * step)));
+                const ty = Math.min(n - 1, Math.max(0, Math.floor(j * step)));
+                const here = region[ty * n + tx];
+                if (here >= 0) return here;
+                // One ring out, so the fade has somewhere to happen past the last wet
+                // tile rather than being clipped by it.
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const qx = tx + dx, qy = ty + dy;
+                        if (qx < 0 || qy < 0 || qx >= n || qy >= n) continue;
+                        const r = region[qy * n + qx];
+                        if (r >= 0) return r;
+                    }
+                }
+                return -1;
+            };
+
+            const vertexAt = (i, j, id) => {
                 const key = j * verts + i;
                 if (map[key] >= 0) return map[key];
                 const tx = i * step, tz = j * step;
+                const level = levels[id];
                 const idx = positions.length / 3;
-                // The surface sits at the uncarved ground height: the basin below it is
-                // what `surfaceY` removed, so the two meet exactly at the shoreline.
-                positions.push(tx, R3D.groundY(w, tx, tz) + 0.015, tz);
+
+                positions.push(tx, level, tz);
 
                 /*
-                 * Alpha per vertex, so the water fades out rather than ending on a quad
-                 * boundary. Without it the mesh has to stop somewhere, and wherever that
-                 * is reads as a staircase — the shoreline is a smooth curve through a
-                 * grid, and only transparency can express that.
+                 * Depth below the surface drives both colour and alpha, so the water
+                 * darkens toward the middle and fades out where the bed rises to meet
+                 * it. That fade is the shoreline: without it the mesh has to stop on a
+                 * quad boundary, and wherever that is reads as a staircase.
                  */
-                const depth = R3D.waterCarve(w, tx, tz);
-                const d = MathUtils.clamp01(depth * 1.9);
-                _c.copy(shallow).lerp(deep, d);
-                colors.push(_c.r, _c.g, _c.b, MathUtils.clamp01(depth * 14));
+                const depth = Math.max(0, level - R3D.surfaceY(w, tx, tz));
+                _c.copy(shallow).lerp(deep, MathUtils.clamp01(depth * 2.6));
+                colors.push(_c.r, _c.g, _c.b, MathUtils.clamp01(depth * 11));
                 map[key] = idx;
                 return idx;
             };
 
-            const wet = (i, j) => R3D.waterCarve(w, i * step, j * step) > 0.004;
-
-            // One ring of dry quads beyond the water, so the fade has somewhere to
-            // happen instead of being clipped by the last wet vertex.
-            const near = (i, j) => {
-                for (let dj = -1; dj <= 1; dj++) {
-                    for (let di = -1; di <= 1; di++) {
-                        if (wet(i + di, j + dj)) return true;
-                    }
-                }
-                return false;
-            };
+            /** Is there water over this point at all? */
+            const submerged = (i, j, id) =>
+                R3D.surfaceY(w, i * step, j * step) < levels[id];
 
             for (let j = 0; j < verts - 1; j++) {
                 for (let i = 0; i < verts - 1; i++) {
-                    if (!near(i, j) && !near(i + 1, j) && !near(i, j + 1) && !near(i + 1, j + 1)) {
+                    const id = regionAt(i, j);
+                    if (id < 0) continue;
+                    // Skip the quad only if every corner is dry land above the level;
+                    // one wet corner still needs a face for the shoreline to fade on.
+                    if (!submerged(i, j, id) && !submerged(i + 1, j, id) &&
+                        !submerged(i, j + 1, id) && !submerged(i + 1, j + 1, id)) {
                         continue;
                     }
-                    const a = vertexAt(i, j);
-                    const b = vertexAt(i + 1, j);
-                    const c = vertexAt(i, j + 1);
-                    const d = vertexAt(i + 1, j + 1);
+                    const a = vertexAt(i, j, id);
+                    const b = vertexAt(i + 1, j, id);
+                    const c = vertexAt(i, j + 1, id);
+                    const d = vertexAt(i + 1, j + 1, id);
                     indices.push(a, c, b, b, c, d);
                 }
             }

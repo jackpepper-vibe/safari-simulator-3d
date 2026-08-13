@@ -20,7 +20,10 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
 - **The ground is the elevation field the 2D game already had.** It used that field to
   decide how to *shade* its terraced benches; here the same field drives a 67,000-vertex
   mesh, so the escarpments the herds path around are escarpments you can see over.
-  Waterholes are basins carved into it with a surface laid on top, rather than paint.
+  Waterholes are basins carved into it with a level surface laid on top, rather than
+  paint — each pool is found as a connected region and filled to the brim of its own
+  basin, so ground that stands above the waterline reads as an island rather than as a
+  mountain in a lake.
 
 - **The animals are the rigs the 2D game already had.** `IsoSpecies` describes each
   species as anatomy in three dimensions — `fx` forward, `fy` left, `fz` up — because

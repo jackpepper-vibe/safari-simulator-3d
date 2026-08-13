@@ -67,6 +67,15 @@ why a hippo in a pool is submerged for free and no code special-cases wading. Th
 is deliberately smoothed (`R3D.waterCarve`) — sampled raw it produces a saw-toothed rim
 of triangles around every shoreline.
 
+**And water is level.** `Terrain3D._buildWater` flood-fills the pools and gives each one
+a single surface height, taken as an upper percentile of the *carved* terrain under it —
+the brim of its own basin. Two ways to get this wrong, both of which were tried: put
+each vertex at the ground beneath it and a pool across any slope becomes a tilted sheet
+with the relief inside it standing out of the water, which is what "lakes with mountains
+in them" looked like; or take the level from the *uncarved* ground and it sits a whole
+basin depth too high, spreading a thin film over every flat acre nearby. Ground above
+the level is simply not covered — it is an island, which is the correct answer.
+
 **Shared geometry outlives a reserve.** Species rigs and item models are cached across
 runs. `Scene3D.dispose()` must skip anything flagged `geometry.userData.shared` or
 skinned, or the second run draws nothing. There is one `WebGLRenderer` for the life of
