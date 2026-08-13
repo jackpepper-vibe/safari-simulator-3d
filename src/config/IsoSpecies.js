@@ -312,21 +312,32 @@
             gait: { stride: 15, lift: 5, bodyBob: 1.6, phases: [0, 0.52, 0.06, 0.58] }
         }),
 
+        /*
+         * The hippo is authored against the 3D build rather than the isometric one.
+         *
+         * Its rig used to give it a neck thicker than its head, which the flat
+         * projection hid and a blended surface does not: barrel, neck, head and muzzle
+         * all narrowed in turn, so the animal came out as one smooth cone — a mole the
+         * size of a car. A hippo's head is the widest thing about its front end, and
+         * its muzzle is wider still, so that is how it is built now: the profile
+         * *widens* toward the nose. Eyes, ears and nostrils sit on the top plane, where
+         * a hippo's are, which is the other half of the read.
+         */
         hippo: extend(QUADRUPED, {
             id: 'hippo', label: 'Hippo', diet: 'herbivore',
             palette: {
                 base: '#8f7580', limb: '#856b76', hoof: '#4f4046',
                 muzzle: '#a88e99', mane: '#6f5a63', eye: '#20161a'
             },
-            body: { x: 0, z: 16, length: 26, width: 13, height: 13 },
-            neck: { x: 20, z: 18, length: 4, angle: 0.06, thickBase: 19, thickTip: 17 },
+            body: { x: 0, z: 16, length: 27, width: 14, height: 13 },
+            neck: { x: 18, z: 17, length: 4, angle: 0.03, thickBase: 11, thickTip: 10 },
             head: {
-                offset: 8, angle: -0.05,
-                length: 11, width: 8, height: 7,
-                muzzle: { offset: 8, length: 7, width: 6.5, height: 5 }
+                offset: 6, angle: -0.02,
+                length: 13, width: 12, height: 10,
+                muzzle: { offset: 7, length: 10, width: 14, height: 8 }
             },
-            ear: { offset: -4, rise: 3.4, spread: 4, length: 2.4, thick: 2.4 },
-            eye: { offset: 3, rise: 3.4, spread: 4.4, radius: 1.1 },
+            ear: { offset: -5, rise: 4.6, spread: 3.2, length: 2.6, thick: 2.6 },
+            eye: { offset: 0.5, rise: 4.4, spread: 4.6, radius: 1.2 },
             legs: {
                 front: { x: 11, z: 14, spread: 6.5, upper: 7, lower: 7 },
                 rear: { x: -11, z: 14, spread: 7, upper: 7, lower: 7 },

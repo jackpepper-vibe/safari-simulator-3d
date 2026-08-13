@@ -45,6 +45,20 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
   shape to grass — a few rich points instead of an even field — so browsers gather,
   strip a stand and move on, and the giraffes are reliably somewhere worth watching.
 
+- **Faces are built, not implied.** A jaw under the muzzle gives a mouth crease rather
+  than a snout; nostrils and a mouth line are painted onto the finished skin; and eyes
+  and ears are placed by casting a ray from the middle of the skull until it meets the
+  hide, so they sit *on* the head whatever shape the blend gave it. The hippo was
+  re-authored outright — its rig had a neck thicker than its head, which the flat
+  projection hid and a blended surface turned into a mole the size of a car.
+
+- **The camp is a camp.** A two-storey lodge on a stone plinth with a wrapped veranda, a
+  railed lookout facing the plain, guest bandas, a water tank, a fire pit and a big
+  layered thatched roof that is the landmark you navigate the reserve by. One draw call,
+  like everything else here.
+
+![The safari camp](shots/station.png)
+
 - **The gait is the same gait.** Two-bone IK, a straight backward sweep in contact and a
   forward arc in the air, advanced by distance travelled so hooves never skate. The 2D
   version solved for a joint position to draw; this one emits bone rotations. Giraffes

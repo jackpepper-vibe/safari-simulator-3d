@@ -238,50 +238,213 @@
      * ------------------------------------------------------------------ */
 
     /**
-     * The ranger station: a thatched block, a water tank on a stand, and a shaded
-     * veranda. The one fixed point on a landscape that is otherwise grass and weather.
+     * A pyramidal thatched roof.
+     *
+     * Four courses of decreasing radius rather than one cone: real thatch is laid in
+     * overlapping layers, and the steps catch the light, which is most of what makes a
+     * roof read as thatch rather than as a brown pyramid. The eaves overhang, because a
+     * roof that stops at the wall reads as a lid.
+     *
+     * @param {number} radius Eaves radius.
+     * @param {number} height Apex height above the eaves.
+     * @param {number} sides Plan shape: 4 for a hipped square, 8 for a round banda.
+     */
+    function thatchRoof(b, radius, height, sides, pal) {
+        const courses = 4;
+        for (let i = 0; i < courses; i++) {
+            const t = i / courses;
+            const t1 = (i + 1) / courses;
+            const r0 = radius * (1 - t * 0.82);
+            const r1 = radius * (1 - t1 * 0.82);
+            b.color(i % 2 ? pal.thatch : pal.thatchDark);
+            b.push()
+                .translate(0, height * t + height / courses / 2, 0)
+                .rotate(0, Math.PI / sides, 0)
+                .scale(r0, height / courses * 1.04, r0);
+            b.add(new THREE.CylinderGeometry(r1 / r0, 1, 1, sides, 1));
+            b.pop();
+        }
+        // A capped ridge, so the apex is finished rather than sliced off.
+        b.color(pal.thatchDark);
+        b.push().translate(0, height * 1.02, 0)
+            .sphere(radius * 0.12, height * 0.14, radius * 0.12, { low: true })
+            .pop();
+    }
+
+    /** A run of veranda posts with rails along them. */
+    function railing(b, x0, z0, x1, z1, height, pal) {
+        const span = Math.hypot(x1 - x0, z1 - z0);
+        const steps = Math.max(2, Math.round(span / 0.62));
+        b.color(pal.post);
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            b.limb(x0 + (x1 - x0) * t, 0, z0 + (z1 - z0) * t,
+                x0 + (x1 - x0) * t, height, z0 + (z1 - z0) * t,
+                0.038, 0.032, { radial: 5 });
+        }
+        // Two rails, as a rough-sawn timber balustrade.
+        for (const h of [height, height * 0.55]) {
+            b.push().translate((x0 + x1) / 2, h, (z0 + z1) / 2)
+                .rotate(0, -Math.atan2(z1 - z0, x1 - x0), 0)
+                .box(span, 0.045, 0.045)
+                .pop();
+        }
+    }
+
+    /**
+     * The safari camp.
+     *
+     * The reserve's one built thing, and for a while a shed with a hat on it. It is a
+     * warden's headquarters, so it should look like somewhere a person lives and works:
+     * a two-storey lodge on a stone plinth with a wrapped veranda, a railed lookout on
+     * the upper floor facing the plain — the view the site is scored for when it is
+     * chosen — and a thatched roof big enough to be the landmark you navigate by. Two
+     * guest bandas, a water tank, a fire pit and a flag make it a camp rather than a
+     * building.
+     *
+     * All of it merges into one geometry and draws in one call, so the detail costs
+     * nothing at the distance the camp is usually seen from.
      */
     function buildStation() {
         const b = new R3D.GeoBuilder();
 
-        // Worn apron.
+        /* --- The worn apron the camp stands on ---------------------------- */
         b.color(PAL.stone);
-        b.push().translate(0, 0.02, 0).scale(3.0, 0.04, 3.0).add(R3D.UNIT.cylinderLow).pop();
+        b.push().translate(0, 0.02, 0).scale(4.2, 0.05, 4.2).add(R3D.UNIT.cylinder).pop();
 
-        // The hut.
+        /* --- Ground floor -------------------------------------------------- */
+        // A stone plinth under a whitewashed storey. The two materials are what give
+        // the building a base rather than a hem.
+        b.color(PAL.stone);
+        b.push().translate(0, 0.16, 0).box(2.24, 0.24, 1.74).pop();
         b.color(PAL.wall);
-        b.push().translate(0, 0.62, 0).box(2.00, 1.20, 1.50).pop();
+        b.push().translate(0, 0.70, 0).box(2.10, 0.86, 1.60).pop();
+
+        // Windows and a door, painted as recesses. Modelling them means holes in the
+        // walls, which is a great deal of geometry for a dark rectangle.
         b.color(PAL.wallShade);
-        b.push().translate(0, 0.16, 0).box(2.08, 0.24, 1.58).pop();
-
-        // Thatch, as a shallow pyramid with an overhang.
-        b.color(PAL.thatch);
-        b.push().translate(0, 1.22, 0).scale(1.55, 0.55, 1.25).add(R3D.UNIT.cone).pop();
-        b.color(PAL.thatchDark);
-        b.push().translate(0, 1.20, 0).scale(1.62, 0.06, 1.32).add(R3D.UNIT.cylinderLow).pop();
-
-        // Veranda posts and roof.
-        b.color(PAL.post);
         for (const side of [-1, 1]) {
-            b.limb(1.30, 0, side * 0.62, 1.30, 1.00, side * 0.62, 0.055, 0.05, { radial: 5 });
+            for (const wx of [-0.62, 0, 0.62]) {
+                b.push().translate(wx, 0.78, side * 0.805).box(0.34, 0.34, 0.03).pop();
+            }
         }
-        b.color(PAL.thatch);
-        b.push().translate(1.10, 1.06, 0).rotate(0, 0, -0.12).box(0.80, 0.07, 1.44).pop();
+        b.color(PAL.post);
+        b.push().translate(1.06, 0.62, 0).box(0.03, 0.62, 0.44).pop();
 
-        // Water tank on a stand — the thing that makes a compound read as inhabited.
+        /* --- Veranda -------------------------------------------------------- */
+        b.color(PAL.wallShade);
+        b.push().translate(0.11, 0.27, 0).box(3.06, 0.07, 2.52).pop();
+        b.color(PAL.stone);
+        for (let i = 0; i < 3; i++) {
+            b.push().translate(1.68 + i * 0.15, 0.20 - i * 0.06, 0)
+                .box(0.17, 0.07, 0.72).pop();
+        }
+
+        railing(b, 1.58, -1.24, 1.58, 1.24, 0.52, PAL);
+        railing(b, -1.36, 1.24, 1.58, 1.24, 0.52, PAL);
+        railing(b, -1.36, -1.24, 1.58, -1.24, 0.52, PAL);
+
+        // Posts carrying the veranda roof, standing above the rail.
+        b.color(PAL.post);
+        for (const post of [[1.58, -1.24], [1.58, 1.24], [-1.36, 1.24], [-1.36, -1.24],
+            [0.15, 1.24], [0.15, -1.24]]) {
+            b.limb(post[0], 0.27, post[1], post[0], 1.32, post[1], 0.062, 0.052,
+                { radial: 6 });
+        }
+
+        /*
+         * The veranda's own thatch apron, below the main roof.
+         *
+         * Pitched, not flat. A shallow one reads as a carport awning; thatch is steep
+         * because it has to shed rain, and the pitch is a good part of why a camp looks
+         * like a camp from across the reserve.
+         */
+        b.color(PAL.thatchDark);
+        b.push().translate(0.11, 1.30, 0).rotate(0, Math.PI / 4, 0).scale(2.26, 0.07, 2.26);
+        b.add(new THREE.CylinderGeometry(1, 1, 1, 4, 1));
+        b.pop();
+        b.push().translate(0.11, 1.33, 0);
+        // Kept low and tight to the posts. Any deeper and it swallows the upper storey,
+        // and a two-storey camp that reads as one storey is not worth building.
+        thatchRoof(b, 2.20, 0.56, 4, PAL);
+        b.pop();
+
+        /* --- Upper storey and the lookout ------------------------------------ */
+        b.color(PAL.wall);
+        b.push().translate(-0.12, 2.06, 0).box(1.58, 0.86, 1.26).pop();
+        b.color(PAL.wallShade);
+        for (const side of [-1, 1]) {
+            b.push().translate(-0.12, 2.14, side * 0.645).box(0.72, 0.38, 0.03).pop();
+        }
+        b.push().translate(-0.92, 2.14, 0).box(0.03, 0.38, 0.64).pop();
+
+        // The balcony that faces the plain.
+        b.color(PAL.wallShade);
+        b.push().translate(1.06, 1.66, 0).box(0.92, 0.07, 1.46).pop();
+        railing(b, 1.48, -0.72, 1.48, 0.72, 0.46, PAL);
+        railing(b, 0.66, 0.72, 1.48, 0.72, 0.46, PAL);
+        railing(b, 0.66, -0.72, 1.48, -0.72, 0.46, PAL);
+
+        // The stair up the side of the building.
+        b.color(PAL.post);
+        for (let i = 0; i < 8; i++) {
+            b.push().translate(-1.28, 0.42 + i * 0.165, -0.62 + i * 0.155)
+                .box(0.52, 0.05, 0.26).pop();
+        }
+
+        /* --- The roof that makes it a landmark -------------------------------- */
+        b.color(PAL.thatchDark);
+        b.push().translate(-0.12, 2.46, 0).rotate(0, Math.PI / 4, 0).scale(1.78, 0.07, 1.78);
+        b.add(new THREE.CylinderGeometry(1, 1, 1, 4, 1));
+        b.pop();
+        b.push().translate(-0.12, 2.49, 0);
+        thatchRoof(b, 1.74, 1.76, 4, PAL);
+        b.pop();
+
+        /* --- Guest bandas ------------------------------------------------------ */
+        const bandas = [[-2.60, 1.80, 0.62], [-2.80, -1.60, 0.55]];
+        for (const banda of bandas) {
+            const gx = banda[0], gz = banda[1], gr = banda[2];
+            b.color(PAL.stone);
+            b.push().translate(gx, 0.06, gz).scale(gr * 1.02, 0.12, gr * 1.02)
+                .add(R3D.UNIT.cylinder).pop();
+            b.color(PAL.wall);
+            b.push().translate(gx, 0.40, gz).scale(gr * 0.84, 0.74, gr * 0.84)
+                .add(R3D.UNIT.cylinder).pop();
+            b.push().translate(gx, 0.77, gz);
+            thatchRoof(b, gr * 1.30, gr * 1.45, 8, PAL);
+            b.pop();
+        }
+
+        /* --- Water tank on its stand -------------------------------------------- */
         b.color(PAL.post);
         for (const sx of [-1, 1]) {
             for (const sz of [-1, 1]) {
-                b.limb(-1.55 + sx * 0.22, 0, 0.95 + sz * 0.22,
-                    -1.55 + sx * 0.22, 0.80, 0.95 + sz * 0.22, 0.04, 0.035, { radial: 4 });
+                b.limb(-1.98 + sx * 0.28, 0, 0.02 + sz * 0.28,
+                    -1.98 + sx * 0.21, 1.08, 0.02 + sz * 0.21, 0.046, 0.038, { radial: 5 });
             }
         }
         b.color(PAL.tank);
-        b.push().translate(-1.55, 1.10, 0.95).scale(0.42, 0.60, 0.42)
+        b.push().translate(-1.98, 1.40, 0.02).scale(0.46, 0.64, 0.46)
             .add(R3D.UNIT.cylinder).pop();
         b.color(PAL.rust);
-        b.push().translate(-1.55, 1.42, 0.95).scale(0.44, 0.06, 0.44)
-            .add(R3D.UNIT.cylinderLow).pop();
+        b.push().translate(-1.98, 1.73, 0.02).scale(0.48, 0.07, 0.48)
+            .add(R3D.UNIT.cylinder).pop();
+
+        /* --- Fire pit and flagpole ----------------------------------------------- */
+        b.color(PAL.stone);
+        for (let i = 0; i < 9; i++) {
+            const a = (i / 9) * MathUtils.TAU;
+            b.push().translate(2.45 + Math.cos(a) * 0.44, 0.07, 1.80 + Math.sin(a) * 0.44)
+                .sphere(0.11, 0.09, 0.11, { low: true }).pop();
+        }
+        b.color(PAL.poacherDark);
+        b.push().translate(2.45, 0.09, 1.80).sphere(0.30, 0.05, 0.30, { low: true }).pop();
+
+        b.color(PAL.steel);
+        b.limb(2.15, 0, -1.90, 2.15, 2.20, -1.90, 0.036, 0.022, { radial: 5 });
+        b.color(PAL.canvasTop);
+        b.push().translate(2.31, 2.00, -1.90).box(0.34, 0.21, 0.02).pop();
 
         const mesh = new THREE.Mesh(b.build(), R3D.solidMaterial());
         mesh.castShadow = true;

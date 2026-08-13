@@ -143,6 +143,50 @@
         }
 
         /**
+         * Walk outward from a point until the surface is crossed.
+         *
+         * Features that sit *on* an animal — an eye, an ear — are authored as offsets
+         * from a bone, which works while the head is a known ellipsoid and fails the
+         * moment it is a blended mass: on a big-headed species the eyes ended up buried
+         * inside the skin. This finds where the skin actually is along a direction and
+         * lets the feature be placed against it.
+         *
+         * @param {Array<number>} out Three slots for the surface point.
+         * @param {number} [limit] How far to search, in world units.
+         */
+        project(px, py, pz, dx, dy, dz, out, limit) {
+            const len = Math.hypot(dx, dy, dz) || 1;
+            const ux = dx / len, uy = dy / len, uz = dz / len;
+            const reach = limit === undefined ? 2 : limit;
+            const step = Math.max(1e-3, reach / 48);
+
+            let t = 0;
+            let prev = this.sample(px, py, pz);
+            for (let i = 0; i < 48; i++) {
+                const nt = t + step;
+                const d = this.sample(px + ux * nt, py + uy * nt, pz + uz * nt);
+                if (prev < 0 && d >= 0) {
+                    // Bisect the crossing for a clean contact point.
+                    let lo = t, hi = nt;
+                    for (let k = 0; k < 12; k++) {
+                        const mid = (lo + hi) * 0.5;
+                        if (this.sample(px + ux * mid, py + uy * mid, pz + uz * mid) < 0) lo = mid;
+                        else hi = mid;
+                    }
+                    t = (lo + hi) * 0.5;
+                    break;
+                }
+                prev = d;
+                t = nt;
+            }
+
+            out[0] = px + ux * t;
+            out[1] = py + uy * t;
+            out[2] = pz + uz * t;
+            return out;
+        }
+
+        /**
          * Skin weights at a point.
          *
          * Every part contributes in inverse proportion to its distance, so a vertex

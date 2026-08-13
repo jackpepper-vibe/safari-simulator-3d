@@ -265,6 +265,21 @@
             mz.length * 0.5 * PX, mz.height * 0.5 * PX, mz.width * 0.5 * PX, bulk * 0.09);
 
         /*
+         * A jaw under the muzzle.
+         *
+         * Without one the front of the head is a single tapering mass and every animal
+         * on the reserve ends up with the same blunt snout — the hippo in particular
+         * came out as a mole. The jaw is set slightly back and below, on a tight blend,
+         * which gives a crease for the mouth line to be painted into and stops the
+         * profile reading as a cone.
+         */
+        const jawY = headPos.y + my - mz.height * 0.30 * PX;
+        const jawX = headPos.x + mx - mz.length * 0.14 * PX;
+        field.ellipsoid(iHead, jawX, jawY, 0,
+            mz.length * 0.52 * PX, mz.height * 0.34 * PX, mz.width * 0.44 * PX,
+            bulk * 0.07);
+
+        /*
          * Where the hide changes colour on the finished skin.
          *
          * The markings were a function of position on the unit sphere the torso was
@@ -277,15 +292,47 @@
         const bodyRY = body.height * 0.5 * PX;
         const bodyRZ = body.width * 0.5 * PX;
         const maneReach = spec.mane ? spec.mane.thick * 0.75 * PX : 0;
-        const muzzleR = Math.max(mz.length, mz.height) * 0.5 * PX;
         const neckRun = Math.max(1e-6,
             (headPos.x - neckPos.x) * (headPos.x - neckPos.x) +
             (headPos.y - neckPos.y) * (headPos.y - neckPos.y));
 
+        const noseX = headPos.x + mx + mz.length * 0.42 * PX;
+        const noseY = headPos.y + my + mz.height * 0.12 * PX;
+        const noseSpread = mz.width * 0.26 * PX;
+        const noseR = Math.max(mz.width, mz.height) * 0.11 * PX;
+        const mouthR = mz.width * 0.55 * PX;
+
         const skinColour = (x, y, z) => {
-            // The muzzle owns everything past the front of the skull.
-            const dm = Math.hypot(x - (headPos.x + mx), (y - (headPos.y + my)) * 0.85, z);
-            if (dm < muzzleR + bulk * 0.05) return _col.copy(muzzleCol);
+            /*
+             * Nostrils and a mouth line.
+             *
+             * Two dark spots and a crease, and a blank snout becomes a face. They are
+             * painted rather than modelled because at the size an animal is usually
+             * seen they only ever need to be marks — and because a hole in the skin
+             * would have to be a hole in the field, which is a lot of geometry for two
+             * dots.
+             */
+            if (Math.hypot(x - noseX, (y - noseY) * 1.2, Math.abs(z) - noseSpread) < noseR) {
+                return _col.copy(eyeCol);
+            }
+            if (x > headPos.x + mx - mz.length * 0.5 * PX &&
+                Math.abs(y - jawY - mz.height * 0.30 * PX) < mz.height * 0.07 * PX &&
+                Math.abs(z) < mouthR) {
+                return _col.copy(eyeCol).lerp(muzzleCol, 0.35);
+            }
+
+            /*
+             * The muzzle, painted to its own shape.
+             *
+             * A round test around the muzzle's centre looks reasonable on an elephant
+             * and swallows a zebra's whole face, because it takes no account of a
+             * muzzle being long and narrow. Testing against the ellipsoid the muzzle
+             * actually is scales correctly for every species on the reserve.
+             */
+            const ex = (x - (headPos.x + mx)) / (mz.length * 0.5 * PX);
+            const ey = (y - (headPos.y + my)) / (mz.height * 0.5 * PX);
+            const ez = z / (mz.width * 0.5 * PX);
+            if (ex * ex + ey * ey + ez * ez < 1.2) return _col.copy(muzzleCol);
 
             if (spec.ruff) {
                 const dr = Math.hypot(x - (headPos.x - spec.ruff.radius * 0.28 * PX),
@@ -312,11 +359,59 @@
             return _col.copy(base);
         };
 
+        /*
+         * Set the eyes and ears against the skin.
+         *
+         * Their rig offsets are measured from the base of the neck, which was fine when
+         * a head was a known ellipsoid drawn at a known place. On a blended surface it
+         * puts them wherever the skin happens to be — on a hippo, several centimetres
+         * inside its own skull. So the nominal position is pushed outward until it
+         * meets the surface, and the feature is placed proud of that.
+         *
+         * The bone rest positions are corrected to match, which is what keeps a blink
+         * squashing the eye rather than sliding it across the face.
+         */
+        const hit = [0, 0, 0];
+        const headCX = headPos.x + hx;
+        const headCY = headPos.y + hy;
+        const headReach = Math.max(head.length, head.width, head.height) * 2 * PX;
+
+        if (spec.eye) {
+            const eye = spec.eye;
+            // Cast from the middle of the skull outward along where the eye belongs.
+            // Starting anywhere else risks starting outside the skin, and a ray that
+            // begins outside never finds a crossing — which is how the first attempt
+            // left ears hanging in the air beside the head.
+            field.project(headCX, headCY, 0,
+                eye.offset * PX, eye.rise * PX, eye.spread * PX, hit, headReach);
+            rest[rig.index.eyes].x = hit[0];
+            rest[rig.index.eyes].y = hit[1];
+            rest[rig.index.eyes].z = 0;
+            spec._eyeZ = Math.abs(hit[2]) - eye.radius * 0.3 * PX;
+        }
+
+        if (spec.ear) {
+            const ear = spec.ear;
+            for (const side of [-1, 1]) {
+                field.project(headCX, headCY, 0,
+                    ear.offset * PX, ear.rise * PX, side * ear.spread * PX, hit, headReach);
+                const bone = rest[rig.index[side < 0 ? 'earL' : 'earR']];
+                bone.x = hit[0];
+                bone.y = hit[1] - ear.thick * 0.12 * PX;
+                bone.z = hit[2];
+            }
+        }
+
         b.bone(iBody).color(base);
         Surface3D.polygonise(b, field, {
-            // Cell size against the animal's own bulk, so a rabbit and an elephant are
-            // both resolved to about the same number of cells.
-            cell: bulk * 0.105,
+            /*
+             * Cell size against the animal's own bulk — so a rabbit and an elephant are
+             * both resolved to about the same number of cells — but never coarser than
+             * the head can stand. A grid sized only by the barrel puts two cells across
+             * a zebra's muzzle, and a face made of two cells is a wedge.
+             */
+            cell: Math.min(bulk * 0.105,
+                Math.max(head.length, head.width, head.height) * 0.20 * PX),
             colorFn: skinColour,
             skinned: true
         });
@@ -410,12 +505,19 @@
                             ear.thick * 0.25 * PX, LOW)
                         .pop();
                 } else if (ear.type === 'long') {
-                    b.limb(0, 0, 0, -ear.length * 0.18 * PX, ear.length * PX, dir * ear.length * 0.1 * PX,
-                        ear.thick * 0.4 * PX, ear.thick * 0.22 * PX, SEG);
+                    b.limb(0, 0, 0, -ear.length * 0.18 * PX, ear.length * PX,
+                        dir * ear.length * 0.1 * PX,
+                        ear.thick * 0.4 * PX, ear.thick * 0.16 * PX, SEG);
+                    b.sphere(ear.thick * 0.38 * PX, ear.thick * 0.38 * PX,
+                        ear.thick * 0.28 * PX, LOW);
                 } else {
+                    // No cap at the tip: an ear should come to a point, and a rounded
+                    // end turns every one of them into an egg balanced on the skull.
                     b.limb(0, 0, 0, -ear.length * 0.25 * PX, ear.length * 0.85 * PX,
                         dir * ear.length * 0.35 * PX,
-                        ear.thick * 0.42 * PX, ear.thick * 0.16 * PX, SEG);
+                        ear.thick * 0.42 * PX, ear.thick * 0.10 * PX, SEG);
+                    b.sphere(ear.thick * 0.40 * PX, ear.thick * 0.40 * PX,
+                        ear.thick * 0.30 * PX, LOW);
                 }
                 b.pop();
             }
@@ -424,10 +526,20 @@
         if (spec.eye) {
             const eye = spec.eye;
             const p = abs('eyes');
+            const spread = spec._eyeZ === undefined ? eye.spread * PX : spec._eyeZ;
             b.bone(rig.index.eyes).color(eyeCol);
             for (const side of [-1, 1]) {
-                b.push().translate(p.x, p.y, p.z + side * eye.spread * PX)
-                    .sphere(eye.radius * PX, eye.radius * PX, eye.radius * 0.7 * PX, LOW)
+                // A lid of hide around the eye, so it reads as set into the head rather
+                // than stuck onto it.
+                b.color(base);
+                b.push().translate(p.x, p.y, p.z + side * spread * 0.94)
+                    .sphere(eye.radius * 1.7 * PX, eye.radius * 1.7 * PX,
+                        eye.radius * 0.9 * PX, LOW)
+                    .pop();
+                b.color(eyeCol);
+                b.push().translate(p.x, p.y, p.z + side * spread)
+                    .sphere(eye.radius * 1.15 * PX, eye.radius * 1.15 * PX,
+                        eye.radius * 0.8 * PX, LOW)
                     .pop();
             }
         }

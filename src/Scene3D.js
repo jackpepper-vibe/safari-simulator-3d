@@ -22,8 +22,12 @@
         R3D, Terrain3D, Flora3D, Sky3D, Creature3D, Models3D, Particles3D, CameraRig
     } = Safari;
 
-    /** Radius of the built compound, in tiles: what has to be dry to site it. */
-    const STATION_RADIUS = 2.6;
+    /**
+     * Radius of the built compound, in tiles: what has to be dry and level to site it.
+     * Grown with the camp — a two-storey lodge with a wrapped veranda and two bandas
+     * needs more flat ground than the hut it replaced, and the jeep parks outside it.
+     */
+    const STATION_RADIUS = 3.4;
 
     /** Dust tints, so a hoof on sand does not throw up the same cloud as one on grass. */
     const DUST_TINT = [
@@ -107,7 +111,9 @@
 
             const site = this._placeStation();
             this.station = { x: site.x, y: site.y, facing: this.rng.range(-0.5, 0.5) };
-            this.world.block(this.station.x, this.station.y, 1.5);
+            // Tight to the buildings rather than the whole apron: the cleared ground is
+            // worn earth, not a wall, and animals should be able to cross it.
+            this.world.block(this.station.x, this.station.y, 2.0);
             this._parkRanger(this.station);
 
             this.gate = this._placeGate(this.station);

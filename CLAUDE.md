@@ -86,6 +86,18 @@ stack, and quad winding is derived from the gradient normals rather than from th
 of the crossing, because getting it wrong per axis silently culls half the faces and the
 animal comes out full of holes.
 
+**Faces need a jaw.** Barrel-neck-head-muzzle in a single blend is a monotonic taper
+and every species comes out with the same snout. `Creature3D` adds a jaw ellipsoid on a
+tight blend, paints nostrils and a mouth line onto the skin, and places eyes and ears by
+`Field.project` — a ray cast from the *middle of the skull* outward. Start that ray
+anywhere else and it can begin outside the surface, where it finds no crossing and the
+feature ends up hanging in the air beside the head.
+
+**The hippo's rig is authored for this build, not the 2D one.** `IsoSpecies.hippo` is the
+one species that has diverged from `../animal-game`: its neck was thicker than its head,
+which a flat projection hides and a blended surface does not. If a rig ever produces a
+cone, check that the widths *increase* toward the muzzle.
+
 **Trees are simulation state.** `Vegetation` owns the prop scatter and the foliage the
 browsers eat, and lives in `src/world/`. `Flora3D` reads that list; it must never
 scatter its own, or the trees the giraffes are eating and the trees you can see will be

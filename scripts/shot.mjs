@@ -93,7 +93,7 @@ const SHOTS = {
             S.step(90);
             S.hour(hour ?? 8.4);
             const st = S.scene.station;
-            S.cam(st.x, st.y, 9, 1.9, 0.30);
+            S.cam(st.x, st.y, 13, 2.05, 0.34);
         }
     }
 };
