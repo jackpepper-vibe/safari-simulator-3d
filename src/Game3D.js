@@ -49,7 +49,16 @@
             this.renderer = new THREE.WebGLRenderer({
                 canvas: this.canvas,
                 antialias: true,
-                powerPreference: 'high-performance'
+                powerPreference: 'high-performance',
+                /*
+                 * Keep the drawing buffer after it is presented.
+                 *
+                 * Without this a screenshot taken between frames can catch a cleared
+                 * buffer and come back black — which it did, intermittently, and only
+                 * ever in the harness. The cost is one buffer that is not recycled; the
+                 * alternative is a capture tool that lies at random.
+                 */
+                preserveDrawingBuffer: true
             });
             this.renderer.outputEncoding = THREE.sRGBEncoding;
             this.renderer.toneMapping = THREE.LinearToneMapping;

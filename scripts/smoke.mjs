@@ -254,7 +254,18 @@ const results = await page.evaluate(() => {
 
         const a = S.spawn('giraffe', tree.x + 1.2, tree.y + 0.9);
         assert(a, 'could not place a giraffe at the tree');
+        /*
+         * Stand it at the tree and take thirst out of the picture.
+         *
+         * `spawnNear` places on the nearest standable ground, which can be a few tiles
+         * off, and a hungry animal may well go and drink first — both perfectly correct
+         * behaviours that turn this into a test of the pathing lottery. What is being
+         * asserted is that a browser at a tree browses it.
+         */
+        a.x = tree.x + 1.0;
+        a.y = tree.y + 0.7;
         a.energy = a.maxEnergy * 0.3;
+        a.thirst = 0;
         const before = a.energyRatio;
 
         for (let i = 0; i < 240; i++) S.scene.update(1 / 30, 1);
@@ -274,7 +285,10 @@ const results = await page.evaluate(() => {
         tree.browseStamp = 0;
         const z = S.spawn('zebra', tree.x + 1.0, tree.y + 0.8);
         assert(z, 'could not place a zebra');
+        z.x = tree.x + 0.9;
+        z.y = tree.y + 0.6;
         z.energy = z.maxEnergy * 0.3;
+        z.thirst = 0;
         for (let i = 0; i < 120; i++) S.scene.update(1 / 30, 1);
         const left = veg.foliageAt(tree, S.scene.simTime);
         assert(left > 0.95, 'a zebra ate the canopy: ' + left.toFixed(2));
