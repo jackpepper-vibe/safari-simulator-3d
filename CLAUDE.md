@@ -1,0 +1,116 @@
+# Safari Simulator 3D — Project Notes
+
+Inherits the global guidelines in `../CLAUDE.md` (commercial-grade code, always commit
+and push after changes, bypass-permissions bash).
+
+A fork of `../animal-game`, which is the same game rendered in three-quarter isometric.
+The simulation is shared ancestry and should stay recognisable between the two; the
+presentation layer is what diverged. **If you fix a gameplay bug here, check whether the
+2D original has it too** — and prefer a fix that applies cleanly to both.
+
+## Shape of the code
+
+Classic scripts under one `Safari` namespace, loaded in dependency order by
+`index.html`. No build tooling, and it runs from `file://`. Three.js is **vendored** at
+`vendor/three.min.js` (r128) rather than pulled from a CDN: the screenshot harness loads
+the page over `file://` with no network at all.
+
+The load order in `index.html` is in two halves, and the line between them matters:
+
+- **Above `<!-- ===== 3D PRESENTATION LAYER ===== -->`** is the simulation, carried over
+  from the 2D build: `TileWorld`, `TimeSystem`, `Weather`, and everything in `src/sim/`
+  — animals, pathing, vehicles, the ranger, relocation, events, goals, ecology.
+- **Below it** is everything that draws. It only ever *reads* simulation state. Keeping
+  that one-way is what made the port tractable. If you find yourself wanting to write to
+  `ecology.animals` or to the tile world from `src/r3d/`, the design has gone wrong.
+
+`src/sim/` keeps the 2D build's `Iso*` filenames and class names. The prefix means
+*tile space*, not *isometric*, and holding the names identical is what lets a gameplay
+change be diffed straight across to `../animal-game/src/iso/`.
+
+Syntax-check every module without a browser:
+
+```
+for f in $(find src -name '*.js'); do node -e "new Function(require('fs').readFileSync('$f','utf8'))" || echo "$f"; done
+```
+
+## Things that will bite you
+
+**Coordinates.** Tile `x` → world **X**, tile `y` → world **Z**, elevation → world **Y**.
+One tile is one world unit; `R3D.HEIGHT` is world units per elevation level (relief is
+exaggerated about threefold against the 2D build, or an 86-tile reserve looks flat in
+perspective). Species rigs are authored in isometric screen pixels — `R3D.PX` converts,
+and a tile is 45.25 of those.
+
+**The camera looks north.** Yaw 0 sits on +Z looking −Z, so smaller tile `y` is
+up-screen — the same orientation as the 2D game and the minimap. A model authored
+nose-along-+X is oriented with `rotation.y = -facing`, because simulation headings
+increase from +X toward +Z. Getting this backwards mirrors the reserve and is not
+obvious from a screenshot.
+
+**Colour space.** The renderer writes sRGB, so Three treats material and vertex colours
+as already linear. Every hex in this project is picked by eye as sRGB and **must** go
+through `R3D.col()`. Custom shaders are worse: they get no colour management at all, so
+any hand-written fragment shader must end with `#include <tonemapping_fragment>` and
+`#include <encodings_fragment>`. Missing those on the sky dome made three in the
+afternoon look like dusk, and it was not obvious until the dome was measured.
+
+**Ground state rides in as a texture.** `Terrain3D` keeps one texel per tile carrying
+grazed-ness and burn, sampled by world position inside both the ground material and the
+grass material. That is why grazing and fire keep working untouched — the simulation
+writes its own arrays and the ground reads them. Any new material that should respond to
+grazing has to sample the same overlay.
+
+**Water is carved, not painted.** `R3D.surfaceY` is the terrain; `R3D.groundY` is the
+same field without the basin. Anything standing on the ground uses `surfaceY`, which is
+why a hippo in a pool is submerged for free and no code special-cases wading. The carve
+is deliberately smoothed (`R3D.waterCarve`) — sampled raw it produces a saw-toothed rim
+of triangles around every shoreline.
+
+**Shared geometry outlives a reserve.** Species rigs and item models are cached across
+runs. `Scene3D.dispose()` must skip anything flagged `geometry.userData.shared` or
+skinned, or the second run draws nothing. There is one `WebGLRenderer` for the life of
+the page for the same class of reason: a context per reserve exhausts the browser's
+supply within a dozen runs.
+
+**Draw calls.** Everything is vertex-coloured and merged: two materials for the whole
+reserve, one instanced mesh per prop kind and variant, one for all the grass, one
+skinned mesh per animal. Adding a per-object material would quietly undo that.
+
+## Verification
+
+Screenshots and a smoke test. Do not describe a visual change as done by reasoning when
+you can capture it.
+
+```
+node scripts/shot.mjs            reserve, play, zebra, dusk, night, station
+node scripts/shot.mjs dusk 18.4  one shot, at a given hour
+node scripts/smoke.mjs           picking, orders, gait, footing, overlay, second run
+```
+
+`window.SS3D` is the test hook — `begin({animals, hour, speed})`, `hour(h)`,
+`cam(tx, ty, dist, yaw, pitch)`, `find(species, dist)`, `spawn`, `step(n, dt)`,
+`draw()`, `play()`, `bare()`. Drive arbitrary states with the shared shot tool:
+
+```
+node C:/Claude/Tools/shot/shot.mjs ./index.html --viewport 1280x800 --wait 3500 \
+  --eval "SS3D.bare(); SS3D.begin({animals:36}); SS3D.step(120); SS3D.find('lion',5); SS3D.draw()" \
+  --out shots/lion.png
+```
+
+`scripts/smoke.mjs` is the one that matters after touching input: the fork rewrote every
+path between the pointer and the simulation, and none of it shows up in a screenshot.
+
+## What is still 2D on purpose
+
+- **Dock portraits.** `src/render/` holds `Painter`, `IsoCreatureArt`, `IsoSolid` and
+  `IsoVehicleArt` solely so the dock can call `makePortrait`. They are good art doing a
+  real job at 66 pixels; rendering thumbnails from the meshes would be more unified and
+  less good.
+- **Condition bars.** Drawn on `#overlay` over the render. Foreshortening them with the
+  ground would be more immersive and harder to read.
+- **The interface.** `styles/main.css` is carried over from the 2D build unchanged so
+  interface changes diff across; this fork's additions live in `styles/three.css`.
+
+`node_modules/`, `shots/` and `package-lock.json` are gitignored. `vendor/` is not: the
+vendored Three.js is part of the app.

@@ -1,0 +1,33 @@
+/**
+ * Safari Simulator 3D — Additions to the shared stylesheet.
+ *
+ * `main.css` is carried over from the 2D build unchanged, so that a change to the
+ * interface can be diffed straight across. Everything this fork needs on top of it —
+ * which is only the flat overlay canvas and one cursor — lives here.
+ */
+
+/*
+ * The overlay.
+ *
+ * A second canvas between the render and the interface panels, carrying the condition
+ * bars. It never takes the pointer: every click belongs to the reserve underneath or to
+ * a panel above, and an invisible full-screen canvas swallowing drags would break both.
+ */
+#overlay {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    z-index: 1;
+    pointer-events: none;
+}
+
+/* Right-dragging orbits the camera, so the canvas advertises that it turns. */
+body.is-iso #world {
+    cursor: grab;
+}
+
+body.is-iso #world.is-dragging {
+    cursor: grabbing;
+}

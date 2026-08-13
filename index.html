@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="description"
+        content="A living savanna ecosystem in real 3D. Stock a reserve with predators and grazers, keep the balance through drought, nightfall and the hunt, and walk the camera around the herd.">
+    <meta name="color-scheme" content="dark">
+    <title>Safari Simulator 3D</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/three.css">
+</head>
+
+<body data-screen="title">
+
+    <!-- The reserve, rendered by WebGL. Every screen below composites over it. -->
+    <canvas id="world" aria-label="The savanna reserve"></canvas>
+
+    <!-- Condition bars and thirst pips, drawn flat over the render. -->
+    <canvas id="overlay" aria-hidden="true"></canvas>
+
+    <!-- =============================================================== -->
+    <!-- Title                                                            -->
+    <!-- =============================================================== -->
+    <section class="screen is-active" id="screen-title" aria-label="Title screen">
+        <div class="title-card">
+            <p class="title-eyebrow">A living ecosystem, in three dimensions</p>
+            <h1 class="title-name">Safari <b>Simulator 3D</b></h1>
+            <p class="title-tagline">
+                Stock a reserve with predators and grazers, then keep them in balance
+                through drought, nightfall and the hunt — and walk the camera round them
+                while you do it.
+            </p>
+
+            <p class="title-brief">
+                You have <b>ten days</b> as warden, <b>forty grazers</b> and
+                <b>seven predators</b> to bring in — no more. Keep them fed, hold a
+                working food chain, move the surplus on to other reserves and keep the
+                poachers off it.
+            </p>
+
+            <div class="title-guide">
+                <div class="guide-item">
+                    <h3>Populate</h3>
+                    <p>Pick a species from the dock, then click the ground to place it.
+                        Grazers and predators have separate allowances for the whole
+                        tenure, so every animal is a choice you cannot take back.</p>
+                </div>
+                <div class="guide-item">
+                    <h3>Sustain</h3>
+                    <p>Grazers eat the grass itself and it grows back slowly. Stock more
+                        than the pasture can feed and they starve, which is the one thing
+                        the brief will not forgive. Watch for drought and fire.</p>
+                </div>
+                <div class="guide-item">
+                    <h3>Intervene</h3>
+                    <p>Arm the ranger and click an animal to sedate it; the loader and
+                        lorry take it out through the gate. Drive at poachers to see
+                        them off.</p>
+                </div>
+            </div>
+
+            <button class="btn-primary" id="start-btn">Begin the safari</button>
+            <p class="title-hint">
+                Drag to pan · right-drag to orbit · wheel to zoom ·
+                <kbd>Space</kbd> pause · <kbd>1</kbd>–<kbd>5</kbd> speed ·
+                <kbd>G</kbd> forage · <kbd>F</kbd> follow · <kbd>R</kbd> ranger ·
+                <kbd>Q</kbd>/<kbd>E</kbd> rotate · <kbd>M</kbd> sound
+            </p>
+        </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- Play                                                             -->
+    <!-- =============================================================== -->
+    <section class="screen" id="screen-playing" aria-label="Reserve controls">
+
+        <!-- Top bar ------------------------------------------------------ -->
+        <header class="topbar">
+            <div class="brand">
+                <span class="brand__name">Safari <b>Simulator</b></span>
+                <span class="brand__pop">POP <span id="population">0</span></span>
+            </div>
+
+            <div class="stats" id="stats" aria-label="Reserve statistics"></div>
+
+            <div class="clock">
+                <canvas class="clock__arc" id="clock-arc" aria-hidden="true"></canvas>
+                <div class="clock__read">
+                    <span class="clock__time" id="clock-time">07:24</span>
+                    <span class="clock__day" id="clock-day">Day 1</span>
+                    <span class="clock__meta">
+                        <i id="period-icon"></i><span id="period-label">Morning</span>
+                        <i id="weather-icon"></i><span id="weather-label">Clear</span>
+                    </span>
+                </div>
+            </div>
+
+            <div class="controls">
+                <div class="speeds" id="speeds" role="group" aria-label="Simulation speed"></div>
+                <button class="icon-btn" id="sound-btn" title="Toggle sound (M)" aria-label="Toggle sound"></button>
+                <button class="btn-ghost btn-ghost--danger" id="exit-btn" title="End the run (Esc)">End run</button>
+            </div>
+        </header>
+
+        <!-- Middle overlay ----------------------------------------------- -->
+        <div class="midlayer">
+            <div class="toasts" id="toasts" aria-live="polite"></div>
+            <div class="pressure" id="pressure" aria-live="polite"></div>
+            <div class="feed" id="feed" aria-live="polite" aria-label="Event feed"></div>
+
+            <!-- Condition read-out for the animal under the pointer -->
+            <div class="inspector" id="inspector" aria-hidden="true">
+                <div class="inspector__head">
+                    <span class="inspector__name" id="inspector-name">Zebra</span>
+                    <span class="inspector__state" id="inspector-state">Roaming</span>
+                </div>
+                <div class="inspector__meters" id="inspector-meters"></div>
+                <div class="inspector__foot" id="inspector-foot"></div>
+            </div>
+        </div>
+
+        <!-- Map and controls hint ---------------------------------------- -->
+        <div class="minimap-panel">
+            <canvas class="minimap" id="minimap" aria-label="Reserve map"></canvas>
+            <span class="minimap-panel__label">The reserve</span>
+        </div>
+
+        <div class="goals" id="objectives" aria-label="Objectives"></div>
+
+        <!-- Dock ---------------------------------------------------------- -->
+        <footer class="dockbar">
+            <div class="dock" id="dock"></div>
+            <div class="dock-actions">
+                <button class="action-btn action-btn--food" id="food-btn">
+                    Scatter forage <kbd>G</kbd>
+                </button>
+                <button class="action-btn action-btn--send" id="send-btn">
+                    Send lorry
+                </button>
+                <button class="action-btn action-btn--clear" id="clear-btn">
+                    Clear reserve
+                </button>
+            </div>
+        </footer>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- Summary                                                          -->
+    <!-- =============================================================== -->
+    <section class="screen" id="screen-summary" aria-label="Run summary">
+        <div class="summary">
+            <div class="summary__head">
+                <div class="summary__grade" id="summary-grade">B</div>
+                <div>
+                    <h2 class="summary__title" id="summary-title">A steady ecosystem</h2>
+                    <p class="summary__blurb" id="summary-blurb"></p>
+                </div>
+            </div>
+
+            <div class="panel panel--goals">
+                <h3 class="panel__title">The brief</h3>
+                <div id="summary-goals"></div>
+            </div>
+
+            <div class="summary__panels">
+                <div class="panel">
+                    <h3 class="panel__title">The run</h3>
+                    <div id="summary-stats"></div>
+                </div>
+                <div class="panel">
+                    <h3 class="panel__title">Who remained</h3>
+                    <div id="summary-species"></div>
+                </div>
+            </div>
+
+            <div class="summary__actions">
+                <button class="btn-primary" id="replay-btn">Run it again</button>
+                <button class="btn-ghost" id="menu-btn">Back to title</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- =============================================================== -->
+    <!-- Engine. Load order matters: each layer depends only on those above -->
+    <!-- =============================================================== -->
+
+    <!-- Three.js is vendored rather than pulled from a CDN: the screenshot
+         harness loads this page over file:// with no network at all. -->
+    <script src="vendor/three.min.js"></script>
+
+    <!-- Core -->
+    <script src="src/core/Core.js"></script>
+
+    <!-- Configuration and data -->
+    <script src="src/config/Palettes.js"></script>
+    <script src="src/config/Config.js"></script>
+    <script src="src/config/Species.js"></script>
+    <script src="src/config/IsoSpecies.js"></script>
+    <script src="src/config/Items.js"></script>
+
+    <!-- World -->
+    <script src="src/world/TileWorld.js"></script>
+    <script src="src/world/TimeSystem.js"></script>
+    <script src="src/world/Weather.js"></script>
+
+    <!-- ===== 3D PRESENTATION LAYER ===== -->
+    <!-- Everything below this line reads the simulation and never writes to it. -->
+    <script src="src/r3d/R3D.js"></script>
+    <script src="src/r3d/Terrain3D.js"></script>
+    <script src="src/r3d/Flora3D.js"></script>
+    <script src="src/r3d/Sky3D.js"></script>
+    <script src="src/r3d/Creature3D.js"></script>
+    <script src="src/r3d/Models3D.js"></script>
+    <script src="src/r3d/Particles3D.js"></script>
+    <script src="src/r3d/CameraRig.js"></script>
+    <script src="src/r3d/Overlay2D.js"></script>
+
+    <!-- 2D art, kept solely for the dock portraits. A rendered thumbnail of a
+         mesh would be more unified and much worse at 66 pixels wide. -->
+    <script src="src/render/Painter.js"></script>
+    <script src="src/render/IsoCreatureArt.js"></script>
+    <script src="src/render/IsoSolid.js"></script>
+    <script src="src/render/IsoVehicleArt.js"></script>
+
+    <!-- Simulation, carried over from the 2D build -->
+    <script src="src/sim/IsoAnimal.js"></script>
+    <script src="src/sim/IsoPath.js"></script>
+    <script src="src/sim/IsoVehicle.js"></script>
+    <script src="src/sim/IsoRanger.js"></script>
+    <script src="src/sim/IsoRelocation.js"></script>
+    <script src="src/sim/IsoEvents.js"></script>
+    <script src="src/sim/IsoGoals.js"></script>
+    <script src="src/sim/IsoEcology.js"></script>
+
+    <!-- Shell -->
+    <script src="src/systems/Icons.js"></script>
+    <script src="src/systems/AudioManager.js"></script>
+    <script src="src/systems/Screens.js"></script>
+    <script src="src/sim/IsoHud.js"></script>
+
+    <script src="src/Scene3D.js"></script>
+    <script src="src/Game3D.js"></script>
+    <script src="src/boot.js"></script>
+</body>
+
+</html>
