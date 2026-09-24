@@ -279,6 +279,16 @@
             }
         }
 
+        // Fade the blade bases out, so the card has no straight bottom edge to show
+        // where it meets a slope: the tuft grows out of the ground, not off a shelf.
+        ctx.globalCompositeOperation = 'destination-out';
+        const fade = ctx.createLinearGradient(0, H, 0, H * 0.82);
+        fade.addColorStop(0, 'rgba(0,0,0,1)');
+        fade.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = fade;
+        ctx.fillRect(0, H * 0.82, W, H * 0.18);
+        ctx.globalCompositeOperation = 'source-over';
+
         const tex = new THREE.CanvasTexture(canvas);
         tex.anisotropy = 4;
         tex.encoding = THREE.sRGBEncoding;

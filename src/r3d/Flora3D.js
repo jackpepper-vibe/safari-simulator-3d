@@ -448,12 +448,19 @@
          * @param {THREE.Texture} overlay Terrain's graze/burn texture.
          * @param {Safari.Vegetation} vegetation The world's standing vegetation. The
          *   scatter lives there now, because the acacias are food rather than scenery.
+         * @param {object} [opts]
+         * @param {Array<{x:number,y:number,r:number}>} [opts.clearings] Ground kept
+         *   bare of grass: the station's compound, where the ground is worn to earth.
+         * @param {Safari.Horizon3D} [opts.horizon] The land beyond the fence, so the
+         *   sward can carry on across the boundary instead of stopping at it.
          */
-        constructor(world, scene, seed, overlay, vegetation) {
+        constructor(world, scene, seed, overlay, vegetation, opts) {
             this.world = world;
             this.scene = scene;
             this.overlay = overlay;
             this.vegetation = vegetation;
+            this.clearings = (opts && opts.clearings) || [];
+            this.horizon = (opts && opts.horizon) || null;
             this.meshes = [];
 
             this.props = vegetation.props;
@@ -592,11 +599,40 @@
                         const x = tx + rng.next(), z = ty + rng.next();
                         const fert = fertility(x, z);
                         if (rng.next() > MathUtils.smoothstep(0.04, 0.6, fert)) continue;
-                        // Nothing grows in standing water or up a cliff face.
+                        // Nothing grows in standing water, up a cliff face, or on the
+                        // trodden earth of a clearing — thinning out toward its edge.
                         if (world.waterAt(x, z) > 0.02) continue;
                         if (world.slopeAt(x, z) > 0.6) continue;
+                        if (this._cleared(x, z, rng)) continue;
                         placements.push(x, z, rng.range(0.7, 1.45), rng.range(0, MathUtils.TAU),
                             MathUtils.clamp01(world.moistureAt(x, z) * 1.4 - 0.25 + rng.spread(0.12)));
+                    }
+                }
+            }
+
+            /*
+             * A band of sward beyond the fence.
+             *
+             * The reserve's grass stopping dead at its boundary drew the fence line
+             * across the plain as a hard edge. Past it the tufts carry on, thinning with
+             * distance and following the outer land's own moisture, until they are too
+             * far out for the camera to show them anyway.
+             */
+            const inside = placements.length / 5;
+            if (this.horizon) {
+                const MARGIN = 26;
+                for (let ty = -MARGIN; ty < n + MARGIN; ty++) {
+                    for (let tx = -MARGIN; tx < n + MARGIN; tx++) {
+                        if (tx >= 0 && ty >= 0 && tx < n && ty < n) continue;
+                        const edge = Math.max(-tx, -ty, tx - n + 1, ty - n + 1);
+                        const lush = Noise.fbm2(tx * 0.06 + 3, ty * 0.06, 3, 2, 0.5);
+                        const keep = (1 - edge / MARGIN) * MathUtils.smoothstep(0.3, 0.6, lush);
+                        for (let i = 0; i < perTile * 0.6; i++) {
+                            if (rng.next() > keep) continue;
+                            placements.push(tx + rng.next(), ty + rng.next(),
+                                rng.range(0.7, 1.35), rng.range(0, MathUtils.TAU),
+                                MathUtils.clamp01(lush * 0.9 - 0.1 + rng.spread(0.12)));
+                        }
                     }
                 }
             }
@@ -609,8 +645,9 @@
             for (let i = 0; i < total; i++) {
                 const k = i * 5;
                 const x = placements[k], z = placements[k + 1];
+                const ground = i < inside ? relief.heightAt(x, z) : this.horizon.heightAt(x, z);
                 // Sunk a little, so no card's straight bottom edge shows on a rise.
-                _pos.set(x, relief.heightAt(x, z) - 0.045, z);
+                _pos.set(x, ground - 0.045, z);
                 _euler.set(0, placements[k + 3], 0);
                 _quat.setFromEuler(_euler);
                 const s = placements[k + 2];
@@ -636,6 +673,15 @@
             this.scene.add(mesh);
             this.meshes.push(mesh);
             this.grass = mesh;
+        }
+
+        /** Is this point inside a clearing? Soft-edged, so the grass thins into it. */
+        _cleared(x, z, rng) {
+            for (const c of this.clearings) {
+                const d = Math.hypot(x - c.x, z - c.y) / c.r;
+                if (d < 1 && rng.next() > MathUtils.smoothstep(0.75, 1, d)) return true;
+            }
+            return false;
         }
 
         /**

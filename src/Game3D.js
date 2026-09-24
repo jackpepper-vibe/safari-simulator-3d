@@ -375,9 +375,12 @@
 
             canvas.addEventListener('pointerdown', (e) => {
                 if (e.button !== 0 && e.button !== 2 && e.button !== 1) return;
-                drag = { x: e.clientX, y: e.clientY, button: e.button, moved: 0 };
-                this.scene.camera.dragging = e.button === 0;
-                if (e.button === 0) canvas.classList.add('is-dragging');
+                // Shift- or Alt-drag with the left button orbits, for trackpads and
+                // mice without a comfortable right button.
+                const orbit = e.button !== 0 || e.shiftKey || e.altKey;
+                drag = { x: e.clientX, y: e.clientY, button: e.button, orbit, moved: 0 };
+                this.scene.camera.dragging = !orbit;
+                if (!orbit) canvas.classList.add('is-dragging');
                 canvas.setPointerCapture(e.pointerId);
             });
 
@@ -388,8 +391,8 @@
                 const dy = e.clientY - drag.y;
                 drag.moved += Math.abs(dx) + Math.abs(dy);
 
-                if (drag.button === 0) this.scene.camera.panByScreen(dx, dy);
-                else this.scene.camera.orbitByScreen(dx, dy);
+                if (drag.orbit) this.scene.camera.orbitByScreen(dx, dy);
+                else this.scene.camera.panByScreen(dx, dy);
 
                 drag.x = e.clientX;
                 drag.y = e.clientY;
@@ -405,7 +408,7 @@
 
                 if (wasDrag) return;
                 // A press that barely moved is a click, not a gesture.
-                if (button === 0) this._click(e.clientX, e.clientY);
+                if (button === 0 && !e.shiftKey && !e.altKey) this._click(e.clientX, e.clientY);
                 else if (button === 2 && this.hud.selected) this.hud.select(null);
             };
             canvas.addEventListener('pointerup', release);
@@ -419,11 +422,37 @@
             canvas.addEventListener('wheel', (e) => {
                 e.preventDefault();
                 const rect = canvas.getBoundingClientRect();
+                /*
+                 * Zoom by how far the wheel actually moved. A fixed step per event made
+                 * a trackpad — which sends dozens of tiny events per gesture — lurch in
+                 * and out, and a notched mouse wheel feel coarse. Lines and pages are
+                 * normalised to pixels first.
+                 */
+                const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+                const px = MathUtils.clamp(e.deltaY * unit, -240, 240);
+                const perNotch = Math.log(Config.camera.zoomStep) / 100;
                 this.scene.camera.zoomAt(
                     e.clientX - rect.left, e.clientY - rect.top,
-                    e.deltaY < 0 ? Config.camera.zoomStep : 1 / Config.camera.zoomStep,
-                    this.scene.world);
+                    Math.exp(-px * perNotch), this.scene.world);
             }, { passive: false });
+
+            // Double-click: glide to the spot, or follow the animal on it.
+            canvas.addEventListener('dblclick', (e) => {
+                // Only when nothing is armed: with a species or the ranger on the
+                // cursor, the two clicks inside a double-click are orders already.
+                if (!this.running || this.hud.selected) return;
+                this._updatePointer(e.clientX, e.clientY);
+                const t = this.pointerTile;
+                if (!t.hit) return;
+                const animal = this._animalUnder(t.x, t.y);
+                if (animal) {
+                    this.scene.camera.follow(animal);
+                    this.hud.toast('Following the ' +
+                        IsoSpecies[animal.species].label.toLowerCase(), 'cool');
+                } else {
+                    this.scene.camera.glideTo(t.x, t.y);
+                }
+            });
 
             canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -446,9 +475,7 @@
                 if (k === 'f') this._followHovered();
                 if (k === 'g') this.scatterForage();
                 if (k === 'm') this.toggleSound();
-                if (k === 'r') this.scene.camera.snapToTile(this.scene.ranger.x, this.scene.ranger.y);
-                if (k === 'q') this.scene.camera.targetYaw -= Math.PI / 8;
-                if (k === 'e') this.scene.camera.targetYaw += Math.PI / 8;
+                if (k === 'r') this.scene.camera.glideTo(this.scene.ranger.x, this.scene.ranger.y);
                 if (k === ' ') {
                     e.preventDefault();
                     this.setSpeed(this.speedIndex === 0 ? Config.sim.defaultSpeedIndex : 0);
@@ -552,6 +579,9 @@
                 (k['a'] || k['arrowleft'] ? 1 : 0) : 0;
             cam.panY = playing ? (k['s'] || k['arrowdown'] ? 1 : 0) -
                 (k['w'] || k['arrowup'] ? 1 : 0) : 0;
+            // Q and E turn the view for as long as they are held, rather than one
+            // fixed step per key press.
+            cam.turn = playing ? (k['e'] ? 1 : 0) - (k['q'] ? 1 : 0) : 0;
 
             this.scene.update(dt, this.speed);
 

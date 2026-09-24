@@ -173,7 +173,9 @@ const results = await page.evaluate(() => {
         const p = S.camera.worldToScreen(tx, y, ty, {});
         assert(p.visible, 'target is off screen');
         game._click(p.x, p.y);
-        const err = Math.hypot(ranger.targetX - tx, ranger.targetY - ty);
+        // The order is the destination. The vehicle's current waypoint is wherever the
+        // straightened route's first leg ends, which may rightly be a long way off.
+        const err = Math.hypot(ranger.destX - tx, ranger.destY - ty);
         assert(err < 3.5, 'ranger was sent ' + err.toFixed(1) + ' tiles from the click');
         game.hud.select(null);
         return 'target within ' + err.toFixed(2) + ' tiles';
@@ -250,6 +252,102 @@ const results = await page.evaluate(() => {
         assert(t.overlayData[k * 4] > 200, 'grazed tile did not darken: ' + t.overlayData[k * 4]);
         assert(t.overlayData[world.index(21, 21) * 4 + 1] === 255, 'burnt tile not marked');
         return 'worn ' + t.overlayData[k * 4] + ', burnt flagged';
+    });
+
+    /* --- Water and relief -------------------------------------------------- */
+
+    check('every pool is level and sits below its own bank', () => {
+        const relief = Safari.Relief3D.of(S.world);
+        const V = relief.verts;
+        const R = Safari.Relief3D.RES;
+        assert(relief.levels.length > 0, 'the reserve has no pools to test');
+        /*
+         * The failure this guards is water standing above the ground that should hold
+         * it: a sheet floating over a slope, or a film spilling over the plain. A pool
+         * must be dry at every grid point a whole tile beyond its footprint.
+         */
+        let spills = 0, wet = 0;
+        for (let j = R; j < V - R; j++) {
+            for (let i = R; i < V - R; i++) {
+                const pool = relief.poolAt(i, j);
+                if (pool < 0 || !relief.holds(i, j)) continue;
+                if (relief.at(i, j) < relief.levelOf(pool)) wet++;
+            }
+        }
+        // Where water may be drawn, the ground at the crest of the bank must be at or
+        // above the level, all the way round every pool.
+        for (let j = R; j < V - R; j++) {
+            for (let i = R; i < V - R; i++) {
+                const pool = relief.poolAt(i, j);
+                if (pool < 0 || relief.holds(i, j)) continue;
+                const inner = relief.holds(i + 1, j) || relief.holds(i - 1, j) ||
+                    relief.holds(i, j + 1) || relief.holds(i, j - 1);
+                if (inner && relief.at(i, j) < relief.levelOf(pool)) spills++;
+            }
+        }
+        assert(wet > 0, 'no pool holds any water');
+        assert(spills === 0, spills + ' points on a bank crest are below the waterline');
+        return relief.levels.length + ' pools, ' + wet + ' wet points, banks hold';
+    });
+
+    /* --- Driving ---------------------------------------------------------- */
+
+    check('a straightened route never cuts through impassable ground', () => {
+        const r = S.scene.ranger;
+        const w = S.world;
+        let tx = 0, ty = 0;
+        // A far destination that can actually be reached: a routable tile may still be
+        // on the far side of a lake with no way round.
+        for (let i = 0; i < 60; i++) {
+            tx = 8 + Math.random() * (w.size - 16);
+            ty = 8 + Math.random() * (w.size - 16);
+            if (Math.hypot(tx - r.x, ty - r.y) < 30 || !r._routable(w, tx, ty)) continue;
+            r.route = null;
+            r.driveTo(tx, ty, w);
+            if (r.route && r.route.length) break;
+        }
+        assert(r.route && r.route.length, 'no reachable far destination in this reserve');
+        let ax = r.x, ay = r.y;
+        for (const wp of r.route) {
+            const len = Math.hypot(wp.x - ax, wp.y - ay);
+            const steps = Math.ceil(len / 0.4);
+            for (let k = 1; k < steps; k++) {
+                const x = ax + (wp.x - ax) * k / steps, y = ay + (wp.y - ay) * k / steps;
+                assert(r._standable(w, x, y), 'leg crosses impassable ground at ' +
+                    x.toFixed(1) + ',' + y.toFixed(1));
+            }
+            ax = wp.x;
+            ay = wp.y;
+        }
+        return r.route.length + ' waypoints over ' + Math.hypot(tx - r.x, ty - r.y).toFixed(0) + ' tiles';
+    });
+
+    check('a parked vehicle cannot spin on the spot', () => {
+        const r = S.scene.ranger;
+        r.route = null;
+        r.speed = 0;
+        const h0 = r.heading;
+        // Ask for the opposite direction from a standstill, and give it a tenth of a
+        // second: a car turns a few degrees, a tank would be most of the way round.
+        r.driveTo(r.x - Math.cos(h0) * 3, r.y - Math.sin(h0) * 3);
+        for (let i = 0; i < 6; i++) r.drive(1 / 60, { world: S.world, bus: S.scene.bus, time: 0 });
+        const turned = Math.abs(Safari.MathUtils.angleDelta(h0, r.heading));
+        assert(turned < 0.3, 'turned ' + turned.toFixed(2) + ' rad in 0.1 s from rest');
+        return 'turned ' + turned.toFixed(3) + ' rad from rest';
+    });
+
+    check('animal hides carry their marking channels', () => {
+        const zebra = Safari.Creature3D.species(Safari.IsoSpecies.zebra).geometry;
+        const mark = zebra.getAttribute('aMark');
+        assert(mark && zebra.getAttribute('aMarkPos'), 'zebra has no marking attributes');
+        let striped = 0;
+        for (let i = 0; i < mark.count; i++) {
+            if (Math.round(mark.getW(i)) === Safari.Creature3D.MARK.ZEBRA) striped++;
+        }
+        // The body skin is striped; legs carry bands and the face none, so this is a
+        // floor on the barrel alone rather than a share of the whole animal.
+        assert(striped > 400, 'too few striped vertices: ' + striped);
+        return striped + ' of ' + mark.count + ' vertices striped';
     });
 
     /* --- Browsing --------------------------------------------------------- */

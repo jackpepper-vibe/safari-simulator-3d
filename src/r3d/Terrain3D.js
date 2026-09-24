@@ -560,10 +560,13 @@
                     if (pool < 0) continue;
                     const level = relief.levelOf(pool);
 
-                    const da = level - relief.at(i, j);
-                    const db = level - relief.at(i + 1, j);
-                    const dc = level - relief.at(i, j + 1);
-                    const dd = level - relief.at(i + 1, j + 1);
+                    // Only inside the bank's crest; beyond it is dry land by definition.
+                    const depth = (ii, jj) => relief.holds(ii, jj)
+                        ? level - relief.at(ii, jj) : -0.05;
+                    const da = depth(i, j);
+                    const db = depth(i + 1, j);
+                    const dc = depth(i, j + 1);
+                    const dd = depth(i + 1, j + 1);
                     if (da <= 0 && db <= 0 && dc <= 0 && dd <= 0) continue;
 
                     const x0 = i * step, x1 = (i + 1) * step;

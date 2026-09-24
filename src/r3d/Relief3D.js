@@ -33,6 +33,13 @@
     const BANK_LIP = 0.05;
     /** The bed sits at least this far under the level, so no pool is a film. */
     const MIN_DEPTH = 0.05;
+    /**
+     * The bank's crest, in tiles beyond the pool's footprint. Inside it the ground may
+     * lie under water; at it the ground is guaranteed to stand at the lip; past it the
+     * bank falls away at `BANK_FALL` world units per tile back to the natural ground.
+     */
+    const CREST = 1;
+    const BANK_FALL = 0.3;
 
     const _cache = new WeakMap();
 
@@ -114,7 +121,14 @@
             this.levels = [];
             const stack = [];
 
+            /*
+             * Wet, and far enough inside the reserve to have a bank all the way round.
+             * A pool running up to the map's edge had nothing beyond it to hold it, so
+             * its water ended in a straight line along the boundary.
+             */
+            const EDGE = 3;
             const wetTile = (tx, ty) => {
+                if (tx < EDGE || ty < EDGE || tx >= n - EDGE || ty >= n - EDGE) return false;
                 const k = (ty * RES + (RES >> 1)) * V + tx * RES + (RES >> 1);
                 return carve[k] > 0.01;
             };
@@ -175,12 +189,15 @@
              * level and fades out before the search gives up.
              */
             this.pointPool = new Int32Array(V * V).fill(-1);
+            /** How far each point lies beyond its pool's footprint, in tiles; 0 inside. */
+            this.pointReach = new Float32Array(V * V);
             for (let j = 0; j < V; j++) {
                 for (let i = 0; i < V; i++) {
                     const x = i / RES, z = j / RES;
                     const tx = Math.min(n - 1, Math.floor(x));
                     const tz = Math.min(n - 1, Math.floor(z));
                     let best = this.tilePool[tz * n + tx];
+                    let reach = 0;
                     if (best < 0) {
                         let bestD = Infinity;
                         for (let dz = -3; dz <= 3; dz++) {
@@ -189,12 +206,17 @@
                                 if (qx < 0 || qz < 0 || qx >= n || qz >= n) continue;
                                 const p = this.tilePool[qz * n + qx];
                                 if (p < 0) continue;
-                                const d = Math.hypot(qx + 0.5 - x, qz + 0.5 - z);
+                                // Distance to the tile's square, not its centre.
+                                const ex = Math.max(qx - x, 0, x - (qx + 1));
+                                const ez = Math.max(qz - z, 0, z - (qz + 1));
+                                const d = Math.hypot(ex, ez);
                                 if (d < bestD) { bestD = d; best = p; }
                             }
                         }
+                        reach = best >= 0 ? bestD : Infinity;
                     }
                     this.pointPool[j * V + i] = best;
+                    this.pointReach[j * V + i] = reach;
                 }
             }
         }
@@ -206,28 +228,40 @@
         /**
          * Cut each pool's bed and raise its bank.
          *
-         * `bank` is a blurred mask of the pool's footprint, so the lift toward the lip
-         * is widest right at the water and fades out over a couple of tiles: a pool on a
-         * slope sits behind a low natural levee rather than a wall.
+         * The bank is shaped by distance from the pool's footprint, so it holds by
+         * construction: ground rises to meet the lip by the crest a tile out, and past
+         * the crest falls away gently to the natural ground. On a flat plain the lip is
+         * a barely-visible rim; where the pool lies across a slope it is a low levee on
+         * the downhill side, which is what holds real water on a slope.
          */
         _shape(ground, carve) {
             const R3D = Safari.R3D;
             const V = this.verts;
             const out = new Float32Array(V * V);
 
-            const mask = new Float32Array(V * V);
-            for (let k = 0; k < mask.length; k++) mask[k] = carve[k] > 0.004 ? 1 : 0;
-            const bank = blur(mask, V, 4, 2);
-
             for (let k = 0; k < out.length; k++) {
                 let s = ground[k];
                 const pool = this.pointPool[k];
                 if (pool >= 0) {
                     const level = this.levels[pool];
-                    const lift = MathUtils.smoothstep(0, 0.6, bank[k]);
-                    s = MathUtils.lerp(s, Math.max(s, level + BANK_LIP), lift);
+                    const reach = this.pointReach[k];
 
-                    const w = MathUtils.smoothstep(0, 0.3, carve[k]);
+                    if (reach > 0) {
+                        // Flat along the crest for half a tile, so every point just
+                        // beyond where water may stand is dry, then the back-slope.
+                        const levee = level + BANK_LIP -
+                            Math.max(0, reach - CREST - 0.5) * BANK_FALL;
+                        // Faded out before the pool search gives up, so the bank never
+                        // ends in a step.
+                        const lift = MathUtils.smoothstep(0, CREST * 0.9, reach) *
+                            (1 - MathUtils.smoothstep(2.1, 2.9, reach));
+                        s = Math.max(s, MathUtils.lerp(s, levee, lift));
+                    }
+
+                    // The bed is only cut inside the crest, so no carve can open the
+                    // bank again from the outside.
+                    const w = MathUtils.smoothstep(0, 0.3, carve[k]) *
+                        (1 - MathUtils.smoothstep(CREST * 0.5, CREST * 0.9, reach));
                     const bed = level - MIN_DEPTH - carve[k] * R3D.WATER_DEPTH * 1.1;
                     s = MathUtils.lerp(s, Math.min(s, bed), w);
                 }
@@ -264,6 +298,16 @@
         }
 
         /**
+         * Can water stand at this grid point? Only inside its pool's bank crest. The
+         * ground beyond may dip below the level again on the far side of a levee, and
+         * that is dry land, not a second pool.
+         */
+        holds(i, j) {
+            const k = j * this.verts + i;
+            return this.pointPool[k] >= 0 && this.pointReach[k] < CREST;
+        }
+
+        /**
          * A pool's current water level.
          *
          * A drought lowers every pool by the same share of its depth, so the shoreline
@@ -276,38 +320,9 @@
 
         /** Depth of standing water at a grid point, or 0 on dry ground. */
         depthAt(i, j) {
-            const pool = this.poolAt(i, j);
-            if (pool < 0) return 0;
-            return Math.max(0, this.levelOf(pool) - this.at(i, j));
+            if (!this.holds(i, j)) return 0;
+            return Math.max(0, this.levelOf(this.poolAt(i, j)) - this.at(i, j));
         }
-    }
-
-    /** Separable box blur, `passes` times, radius `r` samples. */
-    function blur(src, width, r, passes) {
-        let a = Float32Array.from(src);
-        const b = new Float32Array(src.length);
-        const span = 2 * r + 1;
-        for (let p = 0; p < passes; p++) {
-            for (let y = 0; y < width; y++) {
-                for (let x = 0; x < width; x++) {
-                    let acc = 0;
-                    for (let k = -r; k <= r; k++) {
-                        acc += a[y * width + MathUtils.clamp(x + k, 0, width - 1)];
-                    }
-                    b[y * width + x] = acc / span;
-                }
-            }
-            for (let x = 0; x < width; x++) {
-                for (let y = 0; y < width; y++) {
-                    let acc = 0;
-                    for (let k = -r; k <= r; k++) {
-                        acc += b[MathUtils.clamp(y + k, 0, width - 1) * width + x];
-                    }
-                    a[y * width + x] = acc / span;
-                }
-            }
-        }
-        return a;
     }
 
     Relief3D.RES = RES;

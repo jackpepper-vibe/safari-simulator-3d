@@ -135,8 +135,10 @@
             /* --- Presentation ----------------------------------------------- */
             this.terrain = new Terrain3D(this.world, this.scene, this.vegetation.props);
             this.horizon = new Horizon3D(this.world, this.scene, this.seed);
+            const clearings = [{ x: this.station.x, y: this.station.y, r: STATION_RADIUS + 0.5 }];
+            if (this.ranger.home) clearings.push({ x: this.ranger.home.x, y: this.ranger.home.y, r: 1.3 });
             this.flora = new Flora3D(this.world, this.scene, this.seed,
-                this.terrain.overlay, this.vegetation);
+                this.terrain.overlay, this.vegetation, { clearings, horizon: this.horizon });
             this.props = this.vegetation.props;
             this.sky = new Sky3D(this.scene, this.world.size, new Rng(this.seed ^ 0x51));
             this.particles = new Particles3D(this.scene, this.seed);
@@ -342,6 +344,16 @@
             this.rangerRig = Models3D.jeep();
             this.scene.add(this.rangerRig.object);
 
+            // The jeep's carport, over wherever it was parked, open toward the plain.
+            const home = this.ranger.home;
+            if (home) {
+                this.carportMesh = Models3D.buildCarport();
+                const away = Math.atan2(home.y - this.station.y, home.x - this.station.x);
+                this.carportMesh.position.set(home.x, R3D.surfaceY(w, home.x, home.y), home.y);
+                this.carportMesh.rotation.y = R3D.yawFor(away);
+                this.scene.add(this.carportMesh);
+            }
+
             this.loaderRig = Models3D.loader();
             this.scene.add(this.loaderRig.object);
 
@@ -480,6 +492,8 @@
          */
         update(dt, speed) {
             this.clock += dt;
+            /** Real seconds this frame, for presentation that animates on its own. */
+            this._frameDt = dt;
             this.camera.update(dt, this.world);
 
             const sim = dt * (speed === undefined ? 1 : speed);
@@ -817,14 +831,17 @@
 
         _syncVehicles() {
             const w = this.world;
-            this.rangerRig.update(this.ranger, w);
-            this.loaderRig.update(this.relocation.loader, w);
-            this.lorryRig.update(this.relocation.lorry, w);
+            const dt = this._frameDt || 1 / 60;
+            this.rangerRig.update(this.ranger, w, dt);
+            this.loaderRig.update(this.relocation.loader, w, dt);
+            this.lorryRig.update(this.relocation.lorry, w, dt);
 
-            // The loader's arm carries a sedated animal; showing the cargo is what makes
-            // the relocation chain legible rather than three vehicles milling about.
-            const lift = this.relocation.loader.renderState.lift;
-            this.loaderRig.chassis.position.y = 0.02 + (1 - (lift === undefined ? 1 : lift)) * 0.05;
+            // The loader's arm carries a sedated animal, and the lorry's crate shows
+            // what it is taking out; seeing the cargo is what makes the relocation
+            // chain legible rather than three vehicles milling about.
+            const loader = this.relocation.loader.renderState;
+            this.loaderRig.setLoad(loader.lift === undefined ? 1 : loader.lift, loader.cargo || null);
+            this.lorryRig.setCargo(this.relocation.lorry.renderState.cargo);
 
             // Poachers come and go, so their vehicles are created on demand.
             const live = this.events.poachers;
@@ -836,7 +853,7 @@
                     this.poacherRigs.set(p, veh);
                     this.scene.add(veh.object);
                 }
-                veh.update(p, w);
+                veh.update(p, w, dt);
                 veh.object.userData.frame = frame;
             }
             for (const [p, veh] of this.poacherRigs) {

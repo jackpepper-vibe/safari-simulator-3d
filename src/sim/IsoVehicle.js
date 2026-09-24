@@ -22,6 +22,31 @@
     /** How many times a vehicle will re-plan before accepting the road is shut. */
     const MAX_REPLANS = 3;
 
+    /**
+     * Driving dynamics.
+     *
+     * Vehicles used to turn their heading toward the next waypoint by a fixed fraction
+     * each tick, at any speed — including standing still, so a jeep pirouetted on the
+     * spot like a tank and then shot off at full speed along a zig-zag of tile centres.
+     * Now a vehicle can only turn as fast as its speed allows, slows for a bend it
+     * cannot take flat out, and accelerates and brakes at finite rates.
+     */
+    const DRIVE = {
+        /** Fraction of the full turn rate available when crawling. */
+        crawlTurn: 0.35,
+        /** Speed, as a fraction of top speed, at which full steering is available. */
+        fullTurnAt: 0.45,
+        /** Heading error, in radians, at which a vehicle slows to its crawl. */
+        cornerAngle: 1.5,
+        /** Slowest a vehicle will go to take a bend, as a fraction of top speed. */
+        crawl: 0.22,
+        /** Acceleration and braking, in top-speeds per second. */
+        accel: 1.1,
+        brake: 2.6
+    };
+    /** Spacing, in tiles, at which a straightened leg of a route is checked clear. */
+    const SIGHT_STEP = 0.45;
+
     class IsoVehicle {
         /**
          * @param {number} tx Tile coordinates.
@@ -124,10 +149,13 @@
                 (w, x, y) => this._routable(w, x, y));
 
             // Nowhere with clearance? Take a tighter line rather than refusing to go.
+            let strict = true;
             if (!this.route) {
+                strict = false;
                 this.route = path.find(world, this.x, this.y, this.destX, this.destY,
                     (w, x, y) => this._standable(w, x, y));
             }
+            if (this.route) this.route = this._straighten(world, this.route, strict);
             this.routeIndex = 0;
             this.replanCooldown = 1.5;
             this.bestApproach = Infinity;
@@ -156,6 +184,48 @@
                 this.targetX = this.reachX;
                 this.targetY = this.reachY;
             }
+        }
+
+        /**
+         * Pull a route straight wherever the ground allows.
+         *
+         * A* on a grid returns tile centres joined by orthogonal and diagonal steps, so
+         * a route across open plain is a staircase, and a vehicle following it weaves.
+         * Any waypoint that can be skipped — because the straight line past it is
+         * clear with the same clearance the route was planned with — is dropped,
+         * leaving the few corners the terrain actually forces.
+         *
+         * @param {boolean} strict Check legs with routing clearance rather than the
+         *   bare driving test, matching how the route itself was found.
+         */
+        _straighten(world, route, strict) {
+            if (route.length < 3) return route;
+            const clear = (ax, ay, bx, by) => {
+                const len = Math.hypot(bx - ax, by - ay);
+                const steps = Math.ceil(len / SIGHT_STEP);
+                for (let i = 1; i < steps; i++) {
+                    const t = i / steps;
+                    const x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+                    if (strict ? !this._routable(world, x, y) : !this._standable(world, x, y)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            const out = [];
+            let ax = this.x, ay = this.y;
+            let i = -1;
+            while (i < route.length - 1) {
+                // Reach as far along the route as the line of sight allows.
+                let j = route.length - 1;
+                while (j > i + 1 && !clear(ax, ay, route[j].x, route[j].y)) j--;
+                out.push(route[j]);
+                ax = route[j].x;
+                ay = route[j].y;
+                i = j;
+            }
+            return out;
         }
 
         /**
@@ -189,15 +259,22 @@
             return false;
         }
 
-        /** Advance along the route as waypoints are reached. */
+        /**
+         * Advance along the route as waypoints are reached, rounding each corner.
+         *
+         * Inside a look-ahead radius of the current waypoint the aim point slides
+         * toward the one after it, so the vehicle starts its turn before the corner
+         * and sweeps through it instead of driving to the apex and swivelling there.
+         */
         _followRoute(dt) {
             if (this.replanCooldown > 0) this.replanCooldown -= dt;
             if (!this.route || this.routeIndex >= this.route.length) return;
 
             const wp = this.route[this.routeIndex];
+            const d = Math.hypot(wp.x - this.x, wp.y - this.y);
             // Generous, because the vehicle only has to pass near a waypoint, not stop
             // on it — and tightening this makes them visibly hunt around each corner.
-            if (Math.hypot(wp.x - this.x, wp.y - this.y) < 1.8) {
+            if (d < 1.8) {
                 this.routeIndex++;
                 if (this.routeIndex >= this.route.length) {
                     this.targetX = this.reachX;
@@ -206,9 +283,18 @@
                     return;
                 }
             }
-            const next = this.route[this.routeIndex];
-            this.targetX = next.x;
-            this.targetY = next.y;
+            const cur = this.route[this.routeIndex];
+            const after = this.route[this.routeIndex + 1];
+            const lookahead = 1.8 + (this.speed / Math.max(1e-3, this.maxSpeed)) * 1.6;
+            const dc = Math.hypot(cur.x - this.x, cur.y - this.y);
+            if (after && dc < lookahead) {
+                const t = MathUtils.clamp01(1 - dc / lookahead) * 0.6;
+                this.targetX = cur.x + (after.x - cur.x) * t;
+                this.targetY = cur.y + (after.y - cur.y) * t;
+            } else {
+                this.targetX = cur.x;
+                this.targetY = cur.y;
+            }
         }
 
         get arrived() {
@@ -240,11 +326,6 @@
             let ok = true;
 
             if (dist > 0.35) {
-                // Ease into the destination rather than snapping to a stop on it.
-                const approach = MathUtils.smoothstep(0, 3.5, dist);
-                const want = this.maxSpeed * approach * (throttle === undefined ? 1 : throttle);
-                this.speed = MathUtils.damp(this.speed, want, 4.5, dt);
-
                 let bearing = Math.atan2(dy, dx);
 
                 /*
@@ -273,8 +354,30 @@
                     if (!found) bearing += Math.PI;
                 }
 
-                this.heading = MathUtils.angleLerp(this.heading, bearing,
-                    MathUtils.clamp01(this.turnRate * dt));
+                /*
+                 * Speed: ease into the destination, and slow for a bend in proportion
+                 * to how far off the heading it is — a vehicle facing the wrong way
+                 * crawls round rather than launching in the direction it happens to
+                 * point. Then reach that speed at a finite rate, braking harder than
+                 * it accelerates.
+                 */
+                const error = Math.abs(MathUtils.angleDelta(this.heading, bearing));
+                const approach = MathUtils.smoothstep(0, 3.5, dist);
+                const corner = MathUtils.lerp(1, DRIVE.crawl,
+                    MathUtils.smoothstep(0.15, DRIVE.cornerAngle, error));
+                const want = this.maxSpeed * approach * corner *
+                    (throttle === undefined ? 1 : throttle);
+                const rate = (want > this.speed ? DRIVE.accel : DRIVE.brake) * this.maxSpeed * dt;
+                this.speed = MathUtils.approach(this.speed, want, rate);
+
+                // Steering: a rate limit that grows with speed. A parked jeep can still
+                // turn — slowly, as if shuffling — but it cannot spin on the spot.
+                const grip = MathUtils.lerp(DRIVE.crawlTurn, 1, MathUtils.clamp01(
+                    this.speed / (this.maxSpeed * DRIVE.fullTurnAt)));
+                const maxTurn = this.turnRate * grip * dt;
+                this.heading = MathUtils.wrap(this.heading + MathUtils.clamp(
+                    MathUtils.angleDelta(this.heading, bearing), -maxTurn, maxTurn) + Math.PI,
+                MathUtils.TAU) - Math.PI;
 
                 const moved = this._step(world,
                     Math.cos(this.heading) * this.speed * dt,

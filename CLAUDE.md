@@ -15,14 +15,18 @@ Classic scripts under one `Safari` namespace, loaded in dependency order by
 `vendor/three.min.js` (r128) rather than pulled from a CDN: the screenshot harness loads
 the page over `file://` with no network at all.
 
-The load order in `index.html` is in two halves, and the line between them matters:
+The division that matters is between the simulation and the drawing, not the file
+order. `index.html` loads core and config, then the world (`TileWorld`, `Vegetation`,
+`TimeSystem`, `Weather`), then the **3D presentation layer** (`src/r3d/`, marked by
+`<!-- ===== 3D PRESENTATION LAYER ===== -->`), then the 2D portrait art, then the rest
+of the simulation (`src/sim/` — animals, pathing, vehicles, the ranger, relocation,
+events, goals, ecology), then the shell. That works because modules only resolve each
+other when called, not when loaded; within `src/r3d/` the order is still a dependency
+order (`R3D` → `Shading3D` → `Relief3D` → `Surface3D` → `Terrain3D` → `Horizon3D` → …).
 
-- **Above `<!-- ===== 3D PRESENTATION LAYER ===== -->`** is the simulation, carried over
-  from the 2D build: `TileWorld`, `TimeSystem`, `Weather`, and everything in `src/sim/`
-  — animals, pathing, vehicles, the ranger, relocation, events, goals, ecology.
-- **Below it** is everything that draws. It only ever *reads* simulation state. Keeping
-  that one-way is what made the port tractable. If you find yourself wanting to write to
-  `ecology.animals` or to the tile world from `src/r3d/`, the design has gone wrong.
+The presentation layer only ever *reads* simulation state. Keeping that one-way is what
+made the port tractable. If you find yourself wanting to write to `ecology.animals` or
+to the tile world from `src/r3d/`, the design has gone wrong.
 
 `src/sim/` keeps the 2D build's `Iso*` filenames and class names. The prefix means
 *tile space*, not *isometric*, and holding the names identical is what lets a gameplay
@@ -55,26 +59,51 @@ any hand-written fragment shader must end with `#include <tonemapping_fragment>`
 `#include <encodings_fragment>`. Missing those on the sky dome made three in the
 afternoon look like dusk, and it was not obvious until the dome was measured.
 
+**The frame is finished by `PostFX3D`.** The scene renders into a multisampled half-float
+target with the renderer's tone mapping set to **none**; the full-screen pass applies
+exposure (`LightingState.exposure`), a filmic curve, the hour's split-tone grade,
+saturation, a vignette and dither. So materials must write *unmapped linear light* —
+don't set `toneMappingExposure` or a tone-mapping mode anywhere else. If the device can't
+render to half-float, the pass disables itself and the renderer falls back to linear tone
+mapping straight to the screen. The pass also owns **dynamic resolution**: `adapt(dt)`
+drops the render scale (to 0.6 at worst) when real frames run past ~21 ms and raises it
+again when there is headroom, with a ceiling that stops it oscillating. The game is
+fill-rate bound on integrated graphics, so this is what holds the frame rate there.
+
+**Materials are extended in one way: `Shading3D.patch()`.** It splices GLSL against
+Three's own `#include` anchors (throwing if an anchor is missing), keys the program cache,
+and shares live uniforms — `uTime`, `uWind` and the tileable detail-noise texture
+`uDetail` — by reference. `Shading3D.tick()` advances them once a frame. Every surface
+takes its fine grain from that one noise texture, sampled in *world* space (the hides use
+body space), so nothing ships a texture file. Built-in materials are Phong with a black or
+near-black specular, not Lambert: in r128 Lambert is lit per vertex, which faceted every
+coarse mesh and made per-pixel detail impossible.
+
 **Ground state rides in as a texture.** `Terrain3D` keeps one texel per tile carrying
 grazed-ness and burn, sampled by world position inside both the ground material and the
 grass material. That is why grazing and fire keep working untouched — the simulation
 writes its own arrays and the ground reads them. Any new material that should respond to
 grazing has to sample the same overlay.
 
-**Water is carved, not painted.** `R3D.surfaceY` is the terrain; `R3D.groundY` is the
-same field without the basin. Anything standing on the ground uses `surfaceY`, which is
-why a hippo in a pool is submerged for free and no code special-cases wading. The carve
-is deliberately smoothed (`R3D.waterCarve`) — sampled raw it produces a saw-toothed rim
-of triangles around every shoreline.
+**The drawn ground is `Relief3D`, and water is shaped into it.** `R3D.surfaceY` samples a
+grid (three points per tile, vertex-for-vertex with the terrain mesh) built once per
+world; `R3D.groundY` is the simulation's raw elevation. Anything standing on the ground
+uses `surfaceY`, which is why a hippo in a pool is submerged for free and no code
+special-cases wading. Nothing in the simulation reads the relief.
 
-**And water is level.** `Terrain3D._buildWater` flood-fills the pools and gives each one
-a single surface height, taken as an upper percentile of the *carved* terrain under it —
-the brim of its own basin. Two ways to get this wrong, both of which were tried: put
-each vertex at the ground beneath it and a pool across any slope becomes a tilted sheet
-with the relief inside it standing out of the water, which is what "lakes with mountains
-in them" looked like; or take the level from the *uncarved* ground and it sits a whole
-basin depth too high, spreading a thin film over every flat acre nearby. Ground above
-the level is simply not covered — it is an island, which is the correct answer.
+Each pool is a flood-filled region of wet tiles with **one level: its spill height**, a
+low percentile of the dry rim tiles around it. The ground is then shaped to hold that
+level: the bed is cut down inside the footprint, and outside it a levee is raised by
+distance from the footprint so the ground stands at the lip by the **crest** a tile out,
+then falls away gently. Water is only drawn where `relief.holds(i, j)` — inside the crest
+— and each grid triangle is clipped against the level, so the shoreline is the true
+contour. Three earlier attempts failed, in order: a sheet at the ground under each vertex
+(tilted pools, "lakes with mountains in them"); the level from the uncarved ground (a
+basin depth too high, a film over every flat acre); the carve-weighted mean of the
+ground (above the rim on every sloping pool, tile-edged sheets across the plain). The
+smoke test asserts that every bank crest stands above its waterline. The relief is shaped
+from the **undrawn** water field; a drought lowers `levelOf(pool)`, not the ground, so
+shorelines recede down the banks.
 
 **Shared geometry outlives a reserve.** Species rigs and item models are cached across
 runs. `Scene3D.dispose()` must skip anything flagged `geometry.userData.shared` or
@@ -82,9 +111,32 @@ skinned, or the second run draws nothing. There is one `WebGLRenderer` for the l
 the page for the same class of reason: a context per reserve exhausts the browser's
 supply within a dozen runs.
 
-**Draw calls.** Everything is vertex-coloured and merged: two materials for the whole
-reserve, one instanced mesh per prop kind and variant, one for all the grass, one
-skinned mesh per animal. Adding a per-object material would quietly undo that.
+**Draw calls.** Everything is vertex-coloured and merged, with a handful of shared
+materials: `R3D.solidMaterial()` for built things, the patched skinned material for every
+animal, and one each for foliage, rock, grass, ground, horizon and water. One instanced
+mesh per prop kind and variant, one for all the grass, one skinned mesh per animal.
+Adding a per-object material would quietly undo that. The shadow map is refreshed at most
+every other frame (`Scene3D._scheduleShadows`), and immediately whenever the view jumps.
+
+**Foliage is cards over a core.** Bushes and acacia crowns are a polygonised inner mass
+(textured from the atlas's solid swatch) wrapped in alpha-tested leaf cards from
+`Shading3D.foliageTexture()`. Cards take the *clump's* normal, not their own, so a crown
+shades as one volume. Anything alpha-tested that casts a shadow needs the matching
+`customDepthMaterial` (map + alphaTest), or its shadow is a heap of squares.
+
+**Hides are painted per pixel.** Markings are not vertex colours any more: every animal
+vertex carries `aMark` (mark colour, kind) and `aMarkPos` (normalised body position,
+frequency), and the shader patched onto the skinned material in
+`Creature3D.hideMaterial()` draws zebra bands, giraffe cells, fawn dapples, tiger stripes,
+leg bands and countershading from them. A plain `material.clone()` drops the patch — use
+`Creature3D.cloneMaterial()` for the fading and ghost copies.
+
+**Vehicles are animated from the outside.** The simulation moves a point with a heading
+and speed; `Models3D.Vehicle3D` differentiates that frame to frame to put each wheel on
+the ground, spring the body, squat, dive, lean and steer. It needs the real frame `dt`
+(`Scene3D._frameDt`). Driving itself (`IsoVehicle.drive`) is rate-limited by speed, slows
+for bends, and follows routes that `_straighten` has pulled taut with the same clearance
+they were planned with.
 
 **Bodies are implicit surfaces.** `Surface3D` builds a distance field from blended
 primitives and polygonises it with surface nets. Anything that is one continuous mass on
@@ -138,18 +190,25 @@ you can capture it.
 ```
 node scripts/shot.mjs            reserve, play, zebra, dusk, night, station
 node scripts/shot.mjs dusk 18.4  one shot, at a given hour
-node scripts/smoke.mjs           picking, orders, gait, footing, overlay, second run
+node scripts/smoke.mjs           picking, orders, gait, footing, overlay, pools, driving,
+                                 hides, second run
 ```
+
+`scripts/shot.mjs` launches Chromium on the **real GPU** (ANGLE/D3D11 on Windows). The
+shared `C:/Claude/Tools/shot/shot.mjs` launches with no flags and renders on SwiftShader,
+which is slow and does not look like the game — the post pass, alpha-to-coverage and
+shadow filtering all come out differently — so judge visuals with the project's script,
+or a copy of it with the same launch arguments.
 
 `window.SS3D` is the test hook — `begin({animals, hour, speed})`, `hour(h)`,
 `cam(tx, ty, dist, yaw, pitch)`, `find(species, dist)`, `spawn`, `step(n, dt)`,
-`draw()`, `play()`, `bare()`. Drive arbitrary states with the shared shot tool:
+`draw()`, `play()`, `bare()`.
 
-```
-node C:/Claude/Tools/shot/shot.mjs ./index.html --viewport 1280x800 --wait 3500 \
-  --eval "SS3D.bare(); SS3D.begin({animals:36}); SS3D.step(120); SS3D.find('lion',5); SS3D.draw()" \
-  --out shots/lion.png
-```
+Performance is measured the same way, on the GPU, with `--disable-gpu-vsync
+--disable-frame-rate-limit` and a 1-pixel `gl.readPixels` after each `draw()` to sync.
+On this machine's Iris Xe at 1600×900 a stocked reserve renders in roughly 23–27 ms at
+full resolution and ~18 ms at a 0.75 render scale; the numbers are noisy by ±2 ms, so
+compare runs, not single samples.
 
 `scripts/smoke.mjs` is the one that matters after touching input: the fork rewrote every
 path between the pointer and the simulation, and none of it shows up in a screenshot. It

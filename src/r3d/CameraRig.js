@@ -50,9 +50,13 @@
             this.targetPitch = this.pitch;
             this.targetDist = this.dist;
 
-            /** Keyboard pan input, −1..1 per axis. */
+            /** Keyboard pan input, −1..1 per axis, and the eased velocity it drives. */
             this.panX = 0;
             this.panY = 0;
+            this._panVX = 0;
+            this._panVY = 0;
+            /** Keyboard turn input, −1..1, held rather than stepped. */
+            this.turn = 0;
 
             /** True while a drag is in progress, which suppresses easing. */
             this.dragging = false;
@@ -138,6 +142,17 @@
             this.focusY = this.targetY;
         }
 
+        /**
+         * Travel to a tile smoothly, keeping the current framing. The focus is damped
+         * toward its target every frame, so setting the target is the whole glide.
+         */
+        glideTo(tx, ty) {
+            this.targetX = tx;
+            this.targetY = ty;
+            this.followTarget = null;
+            this.clamp();
+        }
+
         /** Trail an entity with an `x`/`y` in tile space. */
         follow(target) {
             this.followTarget = target || null;
@@ -166,18 +181,27 @@
                 }
             }
 
-            if (this.panX || this.panY) {
-                const len = Math.hypot(this.panX, this.panY) || 1;
-                // Pan speed follows the dolly: close in, small steps; zoomed out, strides.
-                const speed = (2.2 + this.dist * 0.55) * dt;
+            /*
+             * Keyboard panning, with momentum. The input sets a desired velocity and
+             * the actual one eases toward it, so a tap nudges, a hold glides up to
+             * speed, and letting go coasts to a stop rather than halting dead.
+             */
+            const len = Math.hypot(this.panX, this.panY) || 1;
+            // Pan speed follows the dolly: close in, small steps; zoomed out, strides.
+            const top = 2.2 + this.dist * 0.55;
+            this._panVX = MathUtils.damp(this._panVX, (this.panX / len) * top, 7, dt);
+            this._panVY = MathUtils.damp(this._panVY, (this.panY / len) * top, 7, dt);
+            if (Math.abs(this._panVX) + Math.abs(this._panVY) > 1e-3) {
                 const cy = Math.cos(this.yaw), sy = Math.sin(this.yaw);
-                const ex = (this.panX / len) * speed;
-                const ez = (this.panY / len) * speed;
+                const ex = this._panVX * dt;
+                const ez = this._panVY * dt;
                 this.targetX += ex * cy + ez * sy;
                 this.targetY += -ex * sy + ez * cy;
-                this.followTarget = null;
+                if (this.panX || this.panY) this.followTarget = null;
                 this.clamp();
             }
+
+            if (this.turn) this.targetYaw += this.turn * 1.9 * dt;
 
             const lambda = this.dragging ? 40 : 12;
             this.focusX = MathUtils.damp(this.focusX, this.targetX, lambda, dt);
@@ -257,13 +281,19 @@
             let prevT = 0;
             let hit = false;
 
-            for (let i = 0; i < 260 && t < 600; i++) {
+            for (let i = 0; i < 900 && t < 600; i++) {
                 const gap = (o.y + d.y * t) - surface(o.x + d.x * t, o.z + d.z * t);
                 if (gap <= 0) { hit = true; break; }
                 prevT = t;
-                // Sphere-trace style: never step further than the clearance, but keep a
-                // floor on the step so a grazing ray still terminates.
-                t += Math.max(0.35, Math.min(gap * 0.9, 12));
+                /*
+                 * Sphere-trace style, conservatively. The clearance is measured straight
+                 * down, and on a steep scarp the ground ahead along the ray is much
+                 * nearer than that — stepping by most of it jumped clean over narrow
+                 * ridges and picked the ground behind them. Half the clearance, a small
+                 * floor so a grazing ray still terminates, and a cap well under the
+                 * width of a ridge.
+                 */
+                t += Math.max(0.12, Math.min(gap * 0.45, 5));
             }
 
             if (hit) {

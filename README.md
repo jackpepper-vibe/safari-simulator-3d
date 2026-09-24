@@ -61,10 +61,11 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
   re-authored outright — its rig had a neck thicker than its head, which the flat
   projection hid and a blended surface turned into a mole the size of a car.
 
-- **The camp is a camp.** A two-storey lodge on a stone plinth with a wrapped veranda, a
-  railed lookout facing the plain, guest bandas, a water tank, a fire pit and a big
-  layered thatched roof that is the landmark you navigate the reserve by. One draw call,
-  like everything else here.
+- **The camp is a camp.** A two-storey lodge on a stone plinth with a wrapped veranda and
+  a railed lookout, under a streaked, fringed thatch that is the landmark you navigate
+  the reserve by; a timber watchtower, a radio mast, solar panels, a staff rondavel, a
+  water tank, fuel drums, a fire pit with log benches, and a carport for the jeep — all
+  on packed earth. One draw call, like everything else here.
 
 ![The safari camp](shots/station.png)
 
@@ -88,19 +89,49 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
 
 ![Sunset over the river](shots/dusk.png)
 
+- **Pools hold their water.** Each waterhole has one level — its spill height, the
+  lowest gap in its bank — and the ground is shaped to hold it: the bed cut down, a low
+  levee raised wherever the land falls away. The surface is clipped to the exact contour
+  and shaded as water: depth-absorbed colour, the sky reflected at grazing angles, a sun
+  glint, foam where it laps the bank.
+
+- **The world carries on past the fence.** Plains that continue the reserve's own ground,
+  rolling hills, blue ranges, a snow-capped volcano on the horizon, distant acacias, and
+  painted cumulus drifting round the sky.
+
+- **Vegetation is leaves, not blobs.** Bushes and crowns are shells of alpha-tested leaf
+  cards over a dark core, casting dappled shadows; boulders are faceted and lichened;
+  the plain is a dense sward of grass cards tinted from lush to gold by the moisture it
+  grows on.
+
+- **Hides are painted per pixel.** Zebra bands that swing horizontal over the haunch,
+  giraffe cells, fawn dapples, tiger stripes, banded legs and countershading, all worked
+  out in the shader from the animal's own body space, so they stay crisp at any range.
+
+- **The frame is finished.** A multisampled HDR target, a filmic curve, an hour-driven
+  colour grade and a vignette — and dynamic resolution that holds the frame rate on
+  laptop graphics.
+
+- **Vehicles drive like vehicles.** Routes are pulled straight wherever the ground
+  allows, corners are rounded, steering is limited by speed and bends are braked for. In
+  the render every wheel finds the ground, the body squats, dives and leans, and the
+  front wheels steer; the ranger turns to take the shot, the loader's cradle lifts the
+  sedated animal, and the lorry's crate carries what it is taking out.
+
 ## Commanding it
 
 | Input | Action |
 | --- | --- |
 | Left-drag | pan the ground |
-| Right-drag | orbit — yaw and pitch |
-| Wheel | zoom toward the pointer |
-| WASD / arrows | pan |
-| `Q` / `E` | rotate by a step |
+| Right-drag, or Shift/Alt + left-drag | orbit — yaw and pitch |
+| Wheel / trackpad | zoom toward the pointer, by how far you scroll |
+| Double-click | glide to that spot, or follow the animal on it |
+| WASD / arrows | pan, easing in and out |
+| Hold `Q` / `E` | turn the view |
 | Click a species, then the ground | place it |
 | Click the ranger, then an animal | sedate it |
 | `F` | follow the animal under the pointer |
-| `G` | scatter forage · `R` jump to the ranger |
+| `G` | scatter forage · `R` glide to the ranger |
 | `Space` pause · `1`–`5` speed · `M` sound · `Esc` end the run |
 
 **The camera is a free orbit**, which is the main departure from Iron Dominion 3D's

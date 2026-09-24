@@ -146,14 +146,20 @@
             _c.copy(PAL.plain).lerp(m > 0.5 ? PAL.plainGreen : PAL.plainDry,
                 Math.abs(m - 0.5) * 1.6);
 
-            if (d < 12) {
-                // Continue the reserve's own ground across the boundary.
+            if (d < 16) {
+                /*
+                 * Continue the reserve's own ground across the boundary, over a short
+                 * band whose width wanders with the noise. The edge colour is the same
+                 * all the way out along a perpendicular, so a long blend smears it into
+                 * visible stripes; a short, broken one reads as the ground changing.
+                 */
                 const ex = MathUtils.clamp(Math.round(MathUtils.clamp(x, 0, n) * Relief3D.RES), 0,
                     this.relief.verts - 1);
                 const ez = MathUtils.clamp(Math.round(MathUtils.clamp(z, 0, n) * Relief3D.RES), 0,
                     this.relief.verts - 1);
                 const edge = Terrain3D.groundColor(this.world, this.relief, ex, ez);
-                const k = MathUtils.smoothstep(0, 12, d);
+                const wander = Noise.fbm2(x * 0.11 + s, z * 0.11 - s, 3, 2, 0.5) - 0.5;
+                const k = MathUtils.smoothstep(1, 9, d + wander * 12);
                 const r = edge.r, g = edge.g, b = edge.b;
                 _c.setRGB(r + (_c.r - r) * k, g + (_c.g - g) * k, b + (_c.b - b) * k);
             }
