@@ -13,7 +13,15 @@
 (function (Safari) {
     'use strict';
 
-    const { MathUtils, Config, Painter, Creature3D, R3D } = Safari;
+    const { MathUtils, Config, Creature3D, R3D } = Safari;
+
+    /*
+     * `Painter` lives in src/render/, which loads after this file, so it is looked up
+     * when drawing rather than when loading. Destructured here it was undefined, and
+     * the first condition bar the overlay tried to draw — any hovered or hungry animal
+     * — threw, taking the rest of that frame (the HUD, the end-of-run checks) with it.
+     */
+    const painter = () => Safari.Painter;
 
     const _p = { x: 0, y: 0, visible: false, depth: 0 };
 
@@ -94,15 +102,15 @@
                 ctx.save();
                 ctx.globalAlpha = visibility;
 
-                Painter.roundRect(ctx, x - 1, y - 1, w + 2, bh + 2, (bh + 2) / 2);
+                painter().roundRect(ctx, x - 1, y - 1, w + 2, bh + 2, (bh + 2) / 2);
                 ctx.fillStyle = 'rgba(8,10,8,0.55)';
                 ctx.fill();
 
-                Painter.roundRect(ctx, x, y, w, bh, bh / 2);
+                painter().roundRect(ctx, x, y, w, bh, bh / 2);
                 ctx.fillStyle = 'rgba(30,34,28,0.9)';
                 ctx.fill();
 
-                Painter.roundRect(ctx, x, y, Math.max(bh, w * ratio), bh, bh / 2);
+                painter().roundRect(ctx, x, y, Math.max(bh, w * ratio), bh, bh / 2);
                 ctx.fillStyle = ratio > 0.55 ? '#7fd68a' : (ratio > 0.28 ? '#e9a94a' : '#ef5a50');
                 ctx.fill();
 
@@ -110,10 +118,10 @@
                 if (thirst > 0.75 || isHovered) {
                     const th = 2.6 * s;
                     const ty = y + bh + 1.8 * s;
-                    Painter.roundRect(ctx, x, ty, w, th, th / 2);
+                    painter().roundRect(ctx, x, ty, w, th, th / 2);
                     ctx.fillStyle = 'rgba(12,14,10,0.5)';
                     ctx.fill();
-                    Painter.roundRect(ctx, x, ty,
+                    painter().roundRect(ctx, x, ty,
                         Math.max(th, w * MathUtils.clamp01(thirst)), th, th / 2);
                     ctx.fillStyle = 'rgba(111,208,232,0.9)';
                     ctx.fill();

@@ -461,6 +461,79 @@
     }
 
     /* ------------------------------------------------------------------ *
+     * Quality tiers
+     * ------------------------------------------------------------------ */
+
+    /**
+     * How much the device can be asked to draw.
+     *
+     * `high` is the game as designed. `low` is for software rendering — Chrome falls
+     * back to SwiftShader when a machine's graphics driver is blocklisted, inside most
+     * virtual machines and over some remote desktops — where a single frame of the full
+     * scene takes long enough to trip the browser's GPU watchdog and lose the context.
+     * Low drops the post pass, most of the grass and the shadow resolution, which is
+     * the difference between a plainer game and no game.
+     */
+    const TIERS = {
+        high: { tier: 'high', post: true, grass: 1, shadowMap: 2048, maxPixelRatio: 2 },
+        low: { tier: 'low', post: false, grass: 0.2, shadowMap: 1024, maxPixelRatio: 1 }
+    };
+    const QUALITY = Object.assign({}, TIERS.high);
+
+    /** @param {'high'|'low'} tier */
+    function setQuality(tier) {
+        Object.assign(QUALITY, TIERS[tier] || TIERS.high);
+        return QUALITY;
+    }
+
+    /**
+     * Pick a tier for a renderer: `?quality=low|high` in the URL wins; otherwise a
+     * software rasteriser gets `low` and everything else `high`.
+     * @param {THREE.WebGLRenderer} renderer
+     */
+    function detectQuality(renderer) {
+        let forced = null;
+        try {
+            forced = new URLSearchParams(window.location.search).get('quality');
+        } catch (e) {
+            forced = null;
+        }
+        if (forced && TIERS[forced]) return setQuality(forced);
+
+        const name = rendererName(renderer.getContext()) || probeRendererName();
+        const software = /swiftshader|llvmpipe|softpipe|software|basic render/i.test(name);
+        QUALITY.renderer = name;
+        return setQuality(software ? 'low' : 'high');
+    }
+
+    /** The GPU's name as the driver reports it, or '' if the context cannot say. */
+    function rendererName(gl) {
+        if (!gl || gl.isContextLost()) return '';
+        const info = gl.getExtension('WEBGL_debug_renderer_info');
+        const name = info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
+            : gl.getParameter(gl.RENDERER);
+        return name ? String(name) : '';
+    }
+
+    /**
+     * Ask a throwaway context, when the game's own cannot answer — it can be lost at
+     * the moment it is created, which software rasterisers in particular do, and a
+     * lost context reports no renderer at all. Released at once.
+     */
+    function probeRendererName() {
+        try {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+            const name = rendererName(gl);
+            const lose = gl && gl.getExtension('WEBGL_lose_context');
+            if (lose) lose.loseContext();
+            return name;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    /* ------------------------------------------------------------------ *
      * Helpers
      * ------------------------------------------------------------------ */
 
@@ -517,6 +590,7 @@
         col, colOf, tmpCol,
         GeoBuilder,
         solidMaterial, skinnedMaterial,
+        QUALITY, setQuality, detectQuality,
         groundY, surfaceY, waterCarve, groundNormal,
         /** Rig pixels → world units. */
         px(v) { return v * PX; },

@@ -104,7 +104,7 @@
         /** @param {THREE.WebGLRenderer} renderer */
         constructor(renderer) {
             this.renderer = renderer;
-            this.enabled = PostFX3D.supported(renderer);
+            this.enabled = Safari.R3D.QUALITY.post && PostFX3D.supported(renderer);
             this.width = 1;
             this.height = 1;
 
@@ -187,6 +187,18 @@
             this.width = Math.max(1, Math.floor(width * dpr * this.scale));
             this.height = Math.max(1, Math.floor(height * dpr * this.scale));
             if (!this.enabled) return;
+            /*
+             * Fewer samples on a very large target. Four-times multisampling of a
+             * half-float target at a 4K-class resolution is several hundred megabytes;
+             * two samples there still smooth the edges, at half the memory.
+             */
+            if (this.target.samples !== undefined) {
+                const samples = this.width * this.height > 2.2e6 ? 2 : 4;
+                if (samples !== this.target.samples) {
+                    this.target.samples = samples;
+                    this.target.dispose();
+                }
+            }
             this.target.setSize(this.width, this.height);
             this.material.uniforms.uResolution.value.set(this.width, this.height);
         }

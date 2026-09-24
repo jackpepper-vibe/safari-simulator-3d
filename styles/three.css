@@ -3,7 +3,7 @@
  *
  * `main.css` is carried over from the 2D build unchanged, so that a change to the
  * interface can be diffed straight across. Everything this fork needs on top of it —
- * which is only the flat overlay canvas and one cursor — lives here.
+ * the flat overlay canvas, the cursors, and the animal action card — lives here.
  */
 
 /*
@@ -30,4 +30,199 @@ body.is-iso #world {
 
 body.is-iso #world.is-dragging {
     cursor: grabbing;
+}
+
+/* Anything that can be clicked — an animal, the jeep — says so. */
+body.is-iso.is-over-target #world:not(.is-dragging) {
+    cursor: pointer;
+}
+
+/* --------------------------------------------------------------------- *
+ * Animal action card
+ *
+ * Opens above a clicked animal and rides with it. Positioned by transform from
+ * `AnimalActions.update`, so it starts at the origin and never lays out the page.
+ * --------------------------------------------------------------------- */
+
+.animal-card {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 30;
+    min-width: 212px;
+    max-width: 260px;
+    padding: 10px 12px 12px;
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    box-shadow: var(--shadow-md);
+    color: var(--text);
+    font-family: var(--font);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity var(--fast) var(--ease), visibility var(--fast);
+}
+
+.animal-card.is-open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.animal-card.is-open.is-offscreen {
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* The pointer down to the animal. */
+.animal-card::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -7px;
+    width: 12px;
+    height: 12px;
+    margin-left: -6px;
+    background: var(--surface-2);
+    border-right: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+    transform: rotate(45deg);
+}
+
+.animal-card__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.animal-card__name {
+    font-weight: 600;
+    font-size: 15px;
+    letter-spacing: 0.02em;
+    color: var(--accent-bright);
+}
+
+.animal-card__close {
+    width: 24px;
+    height: 24px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: transparent;
+    color: var(--text-faint);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.animal-card__close:hover {
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+.animal-card__status {
+    margin: 4px 0 10px;
+    font-size: 12px;
+    color: var(--text-dim);
+    min-height: 16px;
+}
+
+.animal-card__status[data-tone='cool'] { color: var(--cool); }
+.animal-card__status[data-tone='good'] { color: var(--good); }
+
+.animal-card__actions {
+    display: flex;
+    gap: 8px;
+}
+
+.animal-card__btn {
+    flex: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--line-strong);
+    background: var(--surface-raised);
+    color: var(--text);
+    font: 600 13px var(--font);
+    cursor: pointer;
+    transition: background var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+
+.animal-card__btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: var(--text-faint);
+}
+
+.animal-card__btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+/* Dart is the action the card exists for: make it the obvious one. */
+.animal-card__btn--dart {
+    flex: 1.4;
+    background: linear-gradient(160deg, #5fc4dc, #2f8aa3);
+    border-color: rgba(111, 208, 232, 0.6);
+    color: #0c1a1f;
+}
+
+.animal-card__btn--dart.is-cancel {
+    background: var(--surface-raised);
+    border-color: var(--line-strong);
+    color: var(--text);
+}
+
+.animal-card__btn kbd {
+    margin-left: 2px;
+}
+
+/* main.css zeroes every svg's stroke width, which beats the icon's own attribute. */
+.animal-card__icon svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    fill: none;
+}
+
+/* Shown if the WebGL context is lost: the game stops and offers a reload. */
+.context-lost {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: rgba(10, 12, 10, 0.86);
+    color: var(--text);
+    font: 500 16px var(--font);
+}
+
+/* The first-time hint that follows the pointer over an animal. */
+.animal-hint {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 31;
+    padding: 4px 9px;
+    border-radius: var(--r-pill);
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    color: var(--text);
+    font: 500 12px var(--font);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+}
+
+.animal-hint.is-visible {
+    opacity: 1;
 }

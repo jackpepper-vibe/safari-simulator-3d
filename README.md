@@ -129,8 +129,10 @@ was replaced is everything below the line marked `3D PRESENTATION LAYER` in
 | WASD / arrows | pan, easing in and out |
 | Hold `Q` / `E` | turn the view |
 | Click a species, then the ground | place it |
-| Click the ranger, then an animal | sedate it |
-| `F` | follow the animal under the pointer |
+| Click an animal | open its card: **Dart** it or **Follow** it |
+| `T` | dart the animal on the card, or under the pointer; again to call the ranger off |
+| Click the ranger, then an animal | sedate it (the older route, still works) |
+| `F` | follow the animal on the card, or under the pointer |
 | `G` | scatter forage · `R` glide to the ranger |
 | `Space` pause · `1`–`5` speed · `M` sound · `Esc` end the run |
 

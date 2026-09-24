@@ -70,6 +70,26 @@ drops the render scale (to 0.6 at worst) when real frames run past ~21 ms and ra
 again when there is headroom, with a ceiling that stops it oscillating. The game is
 fill-rate bound on integrated graphics, so this is what holds the frame rate there.
 
+**Quality tiers.** `R3D.detectQuality()` runs once, straight after the renderer is made:
+a software rasteriser (SwiftShader, llvmpipe — what Chrome uses on blocklisted drivers,
+VMs and some remote desktops) gets `low`: no post pass, a fifth of the grass, a 1024
+shadow map and a 1x pixel ratio. At `high` a single frame there trips the GPU watchdog
+and loses the context. `?quality=low|high` in the URL forces a tier. Anything expensive
+you add should read `R3D.QUALITY`.
+
+**The context can be lost, and the game survives it.** Cancelling `webglcontextlost`
+lets the browser restore it and Three re-uploads what it owns; `Game3D._wireContextLoss`
+pauses the loop and shows "recovering", resumes on restore, and offers a reload after
+5 s. `Scene3D.render()` returns early on a lost context, because Three throws if asked to
+compile a shader into one — headless SwiftShader loses the context once at start-up at a
+random moment, so any harness that calls `SS3D.draw()` hits this.
+
+**Script order bites at load time.** Files resolve `Safari.X` when they are *loaded* if
+they destructure it at the top. `src/render/` and `src/sim/` load after `src/r3d/`, so an
+r3d file must look those up at call time — `Overlay2D` destructured `Painter` and threw
+on every condition bar for as long as that went unnoticed. `AnimalActions` needs
+`IsoAnimal`, so it loads in the shell section, just before `Game3D`.
+
 **Materials are extended in one way: `Shading3D.patch()`.** It splices GLSL against
 Three's own `#include` anchors (throwing if an anchor is missing), keys the program cache,
 and shares live uniforms — `uTime`, `uWind` and the tileable detail-noise texture
@@ -177,6 +197,13 @@ browsers eat, and lives in `src/world/`. `Flora3D` reads that list; it must neve
 scatter its own, or the trees the giraffes are eating and the trees you can see will be
 different trees. Acacia crowns are a separate instanced mesh from their trunks purely so
 browsing can scale them.
+
+**Darting goes through one method.** Clicking an animal with nothing armed opens its
+action card (`AnimalActions`); the card's Dart button, the `T` key and the older
+arm-the-ranger-then-click all end in `Game3D._dart(animal)`, so they behave and report
+the same way. The card reads simulation state for its status line and never writes to
+it. `main.css` sets `stroke-width: 0` on every `svg`, so a stroked icon needs its width
+back in CSS — the attribute on the icon loses.
 
 **The camera has a floor.** A free orbit pitched low near a rise puts the eye inside the
 hill and the reserve turns inside out. `CameraRig._place` lifts the eye above

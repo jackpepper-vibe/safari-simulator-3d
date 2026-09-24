@@ -156,6 +156,8 @@
             /* --- State ------------------------------------------------------- */
             this.wind = 1;
             this.hovered = null;
+            /** The animal whose action card is open, if any. */
+            this.selected = null;
             this.placing = null;
             this.rangerArmed = false;
             this.rangerHover = false;
@@ -365,7 +367,9 @@
             this.hoverRing = ringMesh(0.34, 0.44, 0xfff0d2, 0.85);
             this.quarryRing = ringMesh(0.40, 0.52, 0x6fd0e8, 0.9);
             this.rangeRing = ringMesh(0.94, 1.0, 0x6fd0e8, 0.5);
-            this.scene.add(this.hoverRing, this.quarryRing, this.rangeRing);
+            // The animal whose action card is open.
+            this.selectRing = ringMesh(0.46, 0.56, 0xffc76a, 0.95);
+            this.scene.add(this.hoverRing, this.quarryRing, this.rangeRing, this.selectRing);
 
             const disc = new THREE.CircleGeometry(0.5, 28).rotateX(-Math.PI / 2);
             this.placeDisc = new THREE.Mesh(disc, new THREE.MeshBasicMaterial({
@@ -701,6 +705,13 @@
         }
 
         render() {
+            /*
+             * Nothing can be drawn into a lost context, and Three fails outright if it
+             * tries to compile a shader there. The shell pauses its loop while the
+             * context is away; this covers every other caller — the test hook, a resize
+             * — so a device reset can never become an exception.
+             */
+            if (this.renderer.getContext().isContextLost()) return;
             this._scheduleShadows();
             this.sky.follow(this.camera);
             this._syncAnimals();
@@ -898,6 +909,13 @@
                 this.hoverRing.scale.setScalar(r / 0.4);
                 this.hoverRing.position.set(
                     hovered.x, R3D.surfaceY(w, hovered.x, hovered.y) + 0.05, hovered.y);
+            }
+
+            const sel = this.selected;
+            this.selectRing.visible = !!(sel && sel.alive);
+            if (this.selectRing.visible) {
+                this.selectRing.scale.setScalar(Math.max(0.4, sel.radius * 0.95) / 0.5);
+                this.selectRing.position.set(sel.x, R3D.surfaceY(w, sel.x, sel.y) + 0.055, sel.y);
             }
 
             const ranger = this.ranger;

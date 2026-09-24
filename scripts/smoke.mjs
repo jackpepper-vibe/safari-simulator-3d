@@ -17,7 +17,12 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PAGE = 'file:///' + join(ROOT, 'index.html').replace(/\\/g, '/');
 
-const browser = await chromium.launch();
+// On the real GPU, like the screenshot harness: SwiftShader is a different renderer
+// with different limits, and a check that passes there says little about the game.
+const GPU_ARGS = process.platform === 'win32'
+    ? ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--enable-gpu', '--ignore-gpu-blocklist'];
+const browser = await chromium.launch({ args: GPU_ARGS });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
 
 const errors = [];
@@ -191,6 +196,61 @@ const results = await page.evaluate(() => {
         assert(ranger.quarry === a, 'ranger did not take the deer as quarry');
         game.hud.select(null);
         return 'quarry set';
+    });
+
+    check('clicking an animal opens its card, and the card darts it', () => {
+        S.cam(S.world.size / 2, S.world.size / 2, 14, 0.9, 0.55);
+        const ranger = S.scene.ranger;
+        ranger.quarry = null;
+        game.hud.select(null);
+        const a = S.spawn('zebra', S.camera.focusX + 0.5, S.camera.focusY + 0.5);
+        assert(a, 'could not place a zebra');
+        // Stand it somewhere unambiguous: no other animal and not the jeep under the
+        // click, or the click rightly picks one of those instead.
+        const clear = (x, y) => Math.hypot(ranger.x - x, ranger.y - y) > 3 &&
+            S.scene.agents.every((o) => o === a || !o.alive || Math.hypot(o.x - x, o.y - y) > 2.5);
+        for (let i = 0; i < 200; i++) {
+            const x = S.camera.focusX + (Math.random() - 0.5) * 8;
+            const y = S.camera.focusY + (Math.random() - 0.5) * 8;
+            if (clear(x, y) && a._standable(S.world, x, y)) { a.x = x; a.y = y; break; }
+        }
+        const p = S.camera.worldToScreen(a.x, Safari.R3D.surfaceY(S.world, a.x, a.y), a.y, {});
+        game._click(p.x, p.y);
+        assert(game.actions.animal === a, 'the card did not open on the clicked animal');
+
+        game.frame(1 / 60);
+        const btn = document.querySelector('.animal-card__btn--dart');
+        assert(btn && !btn.disabled, 'no enabled Dart button on the card');
+        btn.click();
+        assert(ranger.quarry === a, 'the Dart button did not send the ranger');
+        game.frame(1 / 60);
+        assert(/call off/i.test(btn.textContent), 'button did not offer to call the ranger off');
+        btn.click();
+        assert(ranger.quarry === null, 'pressing it again did not call the ranger off');
+
+        // Clicking open ground closes the card.
+        const gx = S.camera.focusX - 4, gy = S.camera.focusY - 4;
+        const q = S.camera.worldToScreen(gx, Safari.R3D.surfaceY(S.world, gx, gy), gy, {});
+        if (!game._animalUnder(gx, gy)) {
+            game._click(q.x, q.y);
+            assert(!game.actions.isOpen, 'clicking open ground left the card open');
+        }
+        return 'open → dart → call off → close';
+    });
+
+    check('T darts the animal under the pointer', () => {
+        const ranger = S.scene.ranger;
+        ranger.quarry = null;
+        game.actions.close();
+        const a = S.scene.agents.find((x) => x.alive && !x.isDown);
+        game.pointerTile.x = a.x;
+        game.pointerTile.y = a.y;
+        game.pointerInside = true;
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 't' }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: 't' }));
+        assert(ranger.quarry === a, 'T did not send the ranger');
+        ranger.quarry = null;
+        return 'ranger sent';
     });
 
     check('hover picking finds the nearest animal to the ground point', () => {

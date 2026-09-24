@@ -580,7 +580,7 @@
              * reads as a continuous sward near the camera; the vertex shader shrinks
              * tufts away with distance, so the far plain costs nothing it cannot show.
              */
-            const perTile = 20;
+            const perTile = Math.max(2, Math.round(20 * R3D.QUALITY.grass));
             const fertility = (x, z) => {
                 // Bilinear between tile centres, so the sward thins across a boundary
                 // instead of stopping at a tile edge.

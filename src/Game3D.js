@@ -16,8 +16,8 @@
 
     const {
         MathUtils, Config, Ticker, Events,
-        Scene3D, IsoHud, IsoSpecies, Screens, AudioManager, IsoGoals, Overlay2D, R3D,
-        PostFX3D
+        Scene3D, IsoHud, IsoSpecies, IsoAnimal, Screens, AudioManager, IsoGoals, Overlay2D, R3D,
+        PostFX3D, AnimalActions
     } = Safari;
 
     const Screen = Screens.Screen;
@@ -49,7 +49,14 @@
              */
             this.renderer = new THREE.WebGLRenderer({
                 canvas: this.canvas,
-                antialias: true,
+                /*
+                 * No multisampling on the canvas itself. The scene is drawn into the
+                 * post pass's own multisampled target, so a multisampled default
+                 * framebuffer as well is a second full-screen MSAA buffer doing nothing
+                 * — at a high pixel ratio, enough memory to lose the context on a weak
+                 * device. Where the post pass cannot run, edges go unsmoothed.
+                 */
+                antialias: false,
                 powerPreference: 'high-performance',
                 /*
                  * Keep the drawing buffer after it is presented.
@@ -62,6 +69,10 @@
                 preserveDrawingBuffer: true
             });
             this.renderer.outputEncoding = THREE.sRGBEncoding;
+            // Decide how much this device can draw before anything is built for it —
+            // including how many pixels: a software rasteriser draws at 1x.
+            R3D.detectQuality(this.renderer);
+            this.dpr = Math.min(this.dpr, R3D.QUALITY.maxPixelRatio);
             this.renderer.shadowMap.enabled = true;
             this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -87,12 +98,66 @@
             this.pointerInside = false;
             this.pointerScreen = { x: 0, y: 0 };
 
+            /*
+             * The card that opens on a clicked animal: the direct way to dart it or
+             * follow it, without first arming the ranger from the dock.
+             */
+            this.actions = new AnimalActions({
+                root: document.body,
+                onDart: (a) => this._dart(a),
+                onCancel: () => this._callOff(),
+                onFollow: (a) => this._follow(a)
+            });
+
             this.ticker = new Ticker({ fixedStep: 1 / 60 });
             this.ticker.onRender((dt) => this.frame(dt));
 
             this._wireInput();
             this._wireUi();
+            this._wireContextLoss();
             this.resize();
+        }
+
+        /**
+         * Ride out a lost graphics device, and say so while it happens.
+         *
+         * A driver reset, a sleeping laptop or a starved GPU can all take the WebGL
+         * context away. Cancelling the event asks the browser to give it back, and Three
+         * re-uploads everything it owns when it does, so the game pauses, shows that it
+         * is recovering, and carries on. If the context has not come back within a few
+         * seconds it is not coming, and the panel offers a reload instead.
+         */
+        _wireContextLoss() {
+            let panel = null;
+            let giveUp = 0;
+            this.canvas.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault();
+                this.ticker.stop();
+                if (!panel) {
+                    panel = document.createElement('div');
+                    panel.className = 'context-lost';
+                    panel.setAttribute('role', 'alertdialog');
+                    panel.innerHTML = '<p>The graphics device was reset — recovering…</p>' +
+                        '<button type="button" class="btn-primary" hidden>Reload the reserve</button>';
+                    panel.querySelector('button').addEventListener('click',
+                        () => window.location.reload());
+                    document.body.appendChild(panel);
+                }
+                clearTimeout(giveUp);
+                giveUp = setTimeout(() => {
+                    if (!panel) return;
+                    panel.querySelector('p').textContent = 'The graphics device was reset.';
+                    panel.querySelector('button').hidden = false;
+                }, 5000);
+            });
+            this.canvas.addEventListener('webglcontextrestored', () => {
+                clearTimeout(giveUp);
+                if (panel) {
+                    panel.remove();
+                    panel = null;
+                }
+                this.ticker.start();
+            });
         }
 
         /* -------------------------------------------------------------- *
@@ -130,6 +195,7 @@
 
             this.scene.bus.emit(Events.GAME_START, {});
             this.hud.toast('Pick a species, then click the ground', 'good');
+            this.hud.toast('Click any animal to dart it or follow it', 'cool');
         }
 
         /**
@@ -446,9 +512,7 @@
                 if (!t.hit) return;
                 const animal = this._animalUnder(t.x, t.y);
                 if (animal) {
-                    this.scene.camera.follow(animal);
-                    this.hud.toast('Following the ' +
-                        IsoSpecies[animal.species].label.toLowerCase(), 'cool');
+                    this._follow(animal);
                 } else {
                     this.scene.camera.glideTo(t.x, t.y);
                 }
@@ -463,6 +527,7 @@
 
                 if (k === 'escape') {
                     if (this._clearArmed) { this._disarmClear(); return; }
+                    if (this.actions.isOpen) { this.actions.close(); return; }
                     if (this.hud.selected) this.hud.select(null);
                     else if (this.running) this.end();
                     return;
@@ -472,7 +537,19 @@
                     return;
                 }
 
-                if (k === 'f') this._followHovered();
+                if (k === 'f') {
+                    if (this.actions.isOpen) this.actions.follow();
+                    else this._followHovered();
+                }
+                // T: tranquillise — the animal on the open card, or the one under the
+                // pointer if no card is open.
+                if (k === 't') {
+                    if (this.actions.isOpen) this.actions.dart();
+                    else {
+                        const a = this._animalUnder(this.pointerTile.x, this.pointerTile.y);
+                        if (a && this.pointerInside) this._dart(a);
+                    }
+                }
                 if (k === 'g') this.scatterForage();
                 if (k === 'm') this.toggleSound();
                 if (k === 'r') this.scene.camera.glideTo(this.scene.ranger.x, this.scene.ranger.y);
@@ -495,9 +572,7 @@
         _followHovered() {
             const target = this._animalUnder(this.pointerTile.x, this.pointerTile.y);
             if (target) {
-                this.scene.camera.follow(target);
-                this.hud.toast('Following the ' +
-                    IsoSpecies[target.species].label.toLowerCase(), 'cool');
+                this._follow(target);
             } else {
                 this.scene.focusOnAgents();
             }
@@ -522,11 +597,19 @@
             if (!t.hit || t.x < 2 || t.y < 2 || t.x >= w.size - 2 || t.y >= w.size - 2) return;
 
             const id = this.hud.selected;
-            if (!id && this._overRanger(t)) {
-                this.hud.select('ranger');
+            if (!id) {
+                // Nothing armed: a click is a selection. The jeep arms the ranger, as
+                // it always did; an animal opens its action card; open ground closes it.
+                if (this._overRanger(t)) {
+                    this.actions.close();
+                    this.hud.select('ranger');
+                    return;
+                }
+                const animal = this._animalUnder(t.x, t.y);
+                if (animal) this.actions.open(animal);
+                else this.actions.close();
                 return;
             }
-            if (!id) return;
 
             if (id === 'ranger') {
                 this._commandRanger(t);
@@ -550,19 +633,44 @@
          * where the jeep stands, otherwise the jeep closes first and fires on arrival.
          */
         _commandRanger(tile) {
-            const ranger = this.scene.ranger;
             const quarry = this._animalUnder(tile.x, tile.y);
-
             if (quarry) {
-                const dist = Math.hypot(quarry.x - ranger.x, quarry.y - ranger.y);
-                ranger.pursue(quarry);
-                const name = IsoSpecies[quarry.species].label.toLowerCase();
-                this.hud.toast(dist <= ranger.dartRange * 0.72
-                    ? 'Taking the shot on the ' + name
-                    : 'Closing on the ' + name, 'cool');
+                this._dart(quarry);
                 return;
             }
-            ranger.driveTo(tile.x, tile.y);
+            this.scene.ranger.driveTo(tile.x, tile.y);
+        }
+
+        /**
+         * Send the ranger after an animal. Every route to a dart ends here — the action
+         * card, the T key, and the older arm-the-ranger-then-click — so they all behave
+         * and report the same way.
+         */
+        _dart(animal) {
+            const ranger = this.scene.ranger;
+            const name = IsoSpecies[animal.species].label.toLowerCase();
+            if (animal.state === IsoAnimal.State.TRANQUILIZED) {
+                this.hud.toast('The ' + name + ' is already sedated', 'muted');
+                return;
+            }
+            const dist = Math.hypot(animal.x - ranger.x, animal.y - ranger.y);
+            ranger.pursue(animal);
+            this.hud.toast(dist <= ranger.dartRange * 0.72
+                ? 'Taking the shot on the ' + name
+                : 'Ranger heading for the ' + name, 'cool');
+        }
+
+        /** Call the ranger off its quarry; it heads home on its own. */
+        _callOff() {
+            const ranger = this.scene.ranger;
+            if (!ranger.quarry) return;
+            ranger.quarry = null;
+            this.hud.toast('Ranger called off', 'muted');
+        }
+
+        _follow(animal) {
+            this.scene.camera.follow(animal);
+            this.hud.toast('Following the ' + IsoSpecies[animal.species].label.toLowerCase(), 'cool');
         }
 
         /* -------------------------------------------------------------- *
@@ -604,6 +712,19 @@
             this.scene.rangerArmed = playing && ranging;
             this.scene.rangerHover = playing && !armed && this.pointerInside &&
                 this._overRanger(this.pointerTile);
+
+            // The action card, its ring on the ground, and a pointing hand over
+            // anything that can be clicked.
+            if (!playing && this.actions.isOpen) this.actions.close();
+            this.actions.update({
+                scene: this.scene,
+                hovered: this.scene.hovered,
+                pointer: this.pointerScreen,
+                active: playing && !armed
+            });
+            this.scene.selected = this.actions.animal;
+            document.body.classList.toggle('is-over-target', playing && !armed &&
+                !!(this.scene.hovered || this.scene.rangerHover));
 
             this.scene.render();
             this.overlay.render(this.scene);

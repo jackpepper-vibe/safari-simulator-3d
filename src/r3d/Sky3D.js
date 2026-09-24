@@ -352,7 +352,8 @@
              */
             this.key = new THREE.DirectionalLight(0xffffff, 1);
             this.key.castShadow = true;
-            this.key.shadow.mapSize.set(2048, 2048);
+            const map = R3D.QUALITY.shadowMap;
+            this.key.shadow.mapSize.set(map, map);
             this.key.shadow.camera.near = 1;
             this.key.shadow.camera.far = 220;
             this.key.shadow.bias = -0.0012;
