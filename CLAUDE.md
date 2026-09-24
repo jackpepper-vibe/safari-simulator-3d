@@ -170,5 +170,18 @@ snapshot of an animal that may have moved on.
 - **The interface.** `styles/main.css` is carried over from the 2D build unchanged so
   interface changes diff across; this fork's additions live in `styles/three.css`.
 
-`node_modules/`, `shots/` and `package-lock.json` are gitignored. `vendor/` is not: the
-vendored Three.js is part of the app.
+`node_modules/` and `package-lock.json` are gitignored. `vendor/` is not: the vendored
+Three.js is part of the app. `shots/` holds the committed reference captures that
+`scripts/shot.mjs` writes; they are tracked in git but kept off Vercel by `.vercelignore`.
+
+## Publishing
+
+- **GitHub:** `jackpepper-vibe/safari-simulator-3d`
+- **Vercel:** project `animal-game-3d`, live at https://animal-game-3d.vercel.app
+
+The two names differ. Leave them as they are: renaming the Vercel project does not move
+its `*.vercel.app` domain. The Vercel
+project is Git-connected, so pushing to `main` deploys to production and nothing needs
+a manual `vercel deploy`. There is no build step (`vercel.json` serves the repo root
+as-is). After a deploy, check the live page's `<title>` is "Safari Simulator 3D": the
+account's SSO protection returns a login page with status 200 on non-production URLs.
