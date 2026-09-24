@@ -7,10 +7,15 @@
  *
  * Three surfaces:
  *
- *   Ground   one heightfield mesh, vertex-coloured from the same substrate rules the
- *            2D painter used, with pool basins carved into it.
- *   Water    a separate translucent surface at the uncarved height, so pools are
- *            volumes rather than paint.
+ *   Ground   one heightfield mesh over the shaped relief (see Relief3D), vertex-coloured
+ *            from the substrate rules the 2D painter used, with ambient occlusion baked
+ *            in from the heightfield and from everything standing on it. Its material
+ *            adds what a vertex grid a third of a tile across cannot carry: mottling,
+ *            grain, a bump that catches low sun, and bare rock on anything steep.
+ *   Water    one level surface per pool, clipped exactly to where the shaped ground is
+ *            below it, and shaded as water rather than as tinted glass — depth-absorbed
+ *            colour, a sky reflection that strengthens at grazing angles, a sun glint,
+ *            and a lick of foam at the edge.
  *   Overlay  a small data texture, sampled by world position inside the ground
  *            material, carrying what changes during a run: grazed-down pasture and
  *            burn scars. That is why grazing and fire keep working untouched — they
@@ -19,10 +24,10 @@
 (function (Safari, THREE) {
     'use strict';
 
-    const { MathUtils, Config, R3D } = Safari;
+    const { MathUtils, Config, R3D, Relief3D, Shading3D, Vegetation } = Safari;
 
-    /** Ground samples per tile. Three is enough to resolve a terraced riser. */
-    const RES = 3;
+    /** Ground samples per tile. Shared with the relief, vertex for vertex. */
+    const RES = Relief3D.RES;
 
     /** How far the map edge drops away, so the reserve has a rim rather than an edge. */
     const SKIRT = 6;
@@ -32,38 +37,50 @@
      * ------------------------------------------------------------------ */
 
     const GROUND = {
-        lush: R3D.col('#5f8535'),
-        grass: R3D.col('#82953f'),
-        dry: R3D.col('#b3a55e'),
-        dirt: R3D.col('#a8804c'),
-        sand: R3D.col('#d0b787'),
-        rock: R3D.col('#9a9184'),
-        rockDark: R3D.col('#6d6558'),
-        shore: R3D.col('#94824f'),
-        bed: R3D.col('#5f5c3f')
+        lush: R3D.col('#5b7d33'),
+        grass: R3D.col('#7f9140'),
+        dry: R3D.col('#b09f5c'),
+        dirt: R3D.col('#a07a4a'),
+        sand: R3D.col('#c9b083'),
+        rock: R3D.col('#948b7e'),
+        rockDark: R3D.col('#6a6255'),
+        shore: R3D.col('#7f6f48'),
+        bed: R3D.col('#4f4b35')
     };
 
-    const WORN = R3D.col('#9d8556');
+    const WORN = R3D.col('#9a8155');
     const BURNT = R3D.col('#2b2521');
+    const CLIFF = R3D.col('#8a7d6c');
+    const CLIFF_DARK = R3D.col('#5e5448');
+
+    /** Contact shadow radius under each kind of prop, in tiles at scale 1. */
+    const PROP_SHADE = [];
+    PROP_SHADE[Vegetation.PROP.ACACIA] = { radius: 1.35, depth: 0.34 };
+    PROP_SHADE[Vegetation.PROP.BUSH] = { radius: 0.75, depth: 0.42 };
+    PROP_SHADE[Vegetation.PROP.ROCK] = { radius: 0.62, depth: 0.40 };
+    PROP_SHADE[Vegetation.PROP.MOUND] = { radius: 0.36, depth: 0.30 };
 
     const _c = new THREE.Color();
     const _c2 = new THREE.Color();
 
     /**
-     * Ground albedo at a point, before lighting.
+     * Ground albedo at a grid point, before lighting.
      *
      * The same rules the 2D terrain painter used — substrate by moisture, rock by
      * height, a shoreline band around standing water — but evaluated per vertex and
      * blended rather than classified, so boundaries are organic curves and not tile
-     * edges.
+     * edges. The shoreline and the bed are read from the shaped relief rather than from
+     * the raw water field, so the wet band sits exactly at the waterline the pool is
+     * drawn with.
      *
+     * @param {Relief3D} relief
      * @returns {THREE.Color} A scratch colour; copy it before the next call.
      */
-    function groundColor(world, tx, ty) {
+    function groundColor(world, relief, i, j) {
+        const tx = i / RES, ty = j / RES;
         const m = world.moistureAt(tx, ty);
         const grain = world.grainAt(tx, ty);
         const h = world.heightAt(tx, ty);
-        const water = world.waterAt(tx, ty);
 
         /*
          * Moisture drives the substrate ramp, jittered by the fine grain field so the
@@ -98,20 +115,20 @@
             _c.lerp(_c2, rocky);
         }
 
-        // A drawn-down shoreline and then the bed itself.
-        if (water > 0) {
-            _c.lerp(GROUND.shore, MathUtils.clamp01(water * 3.5));
-            _c.lerp(GROUND.bed, MathUtils.clamp01((water - 0.18) * 2.2));
-        } else {
-            const damp = MathUtils.smoothstep(0, 0.08,
-                world.waterAt(tx + 1.2, ty) + world.waterAt(tx - 1.2, ty) +
-                world.waterAt(tx, ty + 1.2) + world.waterAt(tx, ty - 1.2));
-            if (damp > 0) _c.lerp(GROUND.shore, damp * 0.45);
+        // The bed under the full pool, and a damp band up the bank above it.
+        const pool = relief.poolAt(i, j);
+        if (pool >= 0) {
+            const below = relief.levels[pool] - relief.at(i, j);
+            if (below > 0) {
+                _c.lerp(GROUND.shore, MathUtils.clamp01(below * 12));
+                _c.lerp(GROUND.bed, MathUtils.clamp01((below - 0.08) * 4));
+            } else {
+                _c.lerp(GROUND.shore, MathUtils.clamp01(1 + below * 5) * 0.55);
+            }
         }
 
         // A touch of per-vertex variation so large flats are never one flat colour.
-        const v = 1 + (grain - 0.5) * 0.14;
-        _c.multiplyScalar(v);
+        _c.multiplyScalar(1 + (grain - 0.5) * 0.14);
         return _c;
     }
 
@@ -123,14 +140,16 @@
         /**
          * @param {Safari.TileWorld} world
          * @param {THREE.Scene} scene
+         * @param {Array<object>} [props] Standing props, for their contact shadows.
          */
-        constructor(world, scene) {
+        constructor(world, scene, props) {
             this.world = world;
             this.scene = scene;
             this.size = world.size;
+            this.relief = Relief3D.of(world);
 
             this._buildOverlay();
-            this._buildGround();
+            this._buildGround(props || []);
             this._buildWater();
 
             this._drawdown = world.drawdown || 0;
@@ -196,52 +215,54 @@
          * Ground
          * -------------------------------------------------------------- */
 
-        _buildGround() {
+        _buildGround(props) {
             const w = this.world;
-            const n = this.size;
-            const verts = n * RES + 1;
+            const relief = this.relief;
+            const V = relief.verts;
             const step = 1 / RES;
 
-            const positions = new Float32Array(verts * verts * 3);
-            const normals = new Float32Array(verts * verts * 3);
-            const colors = new Float32Array(verts * verts * 3);
-            const indices = [];
+            const positions = new Float32Array(V * V * 3);
+            const normals = new Float32Array(V * V * 3);
+            const colors = new Float32Array(V * V * 3);
+            const indices = new Uint32Array((V - 1) * (V - 1) * 6);
 
-            for (let j = 0; j < verts; j++) {
-                const tz = j * step;
-                for (let i = 0; i < verts; i++) {
-                    const tx = i * step;
-                    const k = (j * verts + i) * 3;
+            const ao = this._occlusion(props);
 
-                    positions[k] = tx;
-                    positions[k + 1] = R3D.surfaceY(w, tx, tz);
-                    positions[k + 2] = tz;
+            for (let j = 0; j < V; j++) {
+                for (let i = 0; i < V; i++) {
+                    const k = (j * V + i) * 3;
+                    positions[k] = i * step;
+                    positions[k + 1] = relief.at(i, j);
+                    positions[k + 2] = j * step;
 
-                    // Analytic normal from the same surface function, which keeps the
-                    // carved pool basins shaded correctly without a smoothing pass.
-                    const d = step;
-                    const ex = R3D.surfaceY(w, tx + d, tz) - R3D.surfaceY(w, tx - d, tz);
-                    const ez = R3D.surfaceY(w, tx, tz + d) - R3D.surfaceY(w, tx, tz - d);
-                    const nx = -ex, ny = 2 * d, nz = -ez;
-                    const len = Math.hypot(nx, ny, nz) || 1;
-                    normals[k] = nx / len;
-                    normals[k + 1] = ny / len;
-                    normals[k + 2] = nz / len;
+                    // Central differences over the shaped grid, which keeps carved pool
+                    // beds and raised banks shaded correctly without a smoothing pass.
+                    const il = Math.max(0, i - 1), ir = Math.min(V - 1, i + 1);
+                    const jl = Math.max(0, j - 1), jr = Math.min(V - 1, j + 1);
+                    const ex = (relief.at(ir, j) - relief.at(il, j)) / ((ir - il) * step);
+                    const ez = (relief.at(i, jr) - relief.at(i, jl)) / ((jr - jl) * step);
+                    const len = Math.hypot(ex, 1, ez);
+                    normals[k] = -ex / len;
+                    normals[k + 1] = 1 / len;
+                    normals[k + 2] = -ez / len;
 
-                    const c = groundColor(w, tx, tz);
-                    colors[k] = c.r;
-                    colors[k + 1] = c.g;
-                    colors[k + 2] = c.b;
+                    const c = groundColor(w, relief, i, j);
+                    const o = ao[j * V + i];
+                    colors[k] = c.r * o;
+                    colors[k + 1] = c.g * o;
+                    colors[k + 2] = c.b * o;
                 }
             }
 
-            for (let j = 0; j < verts - 1; j++) {
-                for (let i = 0; i < verts - 1; i++) {
-                    const a = j * verts + i;
+            let q = 0;
+            for (let j = 0; j < V - 1; j++) {
+                for (let i = 0; i < V - 1; i++) {
+                    const a = j * V + i;
                     const b = a + 1;
-                    const c = a + verts;
+                    const c = a + V;
                     const d = c + 1;
-                    indices.push(a, c, b, b, c, d);
+                    indices[q++] = a; indices[q++] = c; indices[q++] = b;
+                    indices[q++] = b; indices[q++] = c; indices[q++] = d;
                 }
             }
 
@@ -249,7 +270,7 @@
             geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
             geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
             geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-            geo.setIndex(indices);
+            geo.setIndex(new THREE.BufferAttribute(indices, 1));
             geo.computeBoundingSphere();
 
             this.groundMaterial = this._groundMaterial();
@@ -262,56 +283,177 @@
         }
 
         /**
-         * The ground material, patched to sample the overlay.
+         * Ambient occlusion, baked per grid point.
          *
-         * Everything that changes about the ground during a run rides in through here,
-         * which is the same trick the fog of war used in Iron Dominion 3D: leave the
-         * simulation writing to its own arrays, and let the material read them.
+         * Two sources, multiplied. The heightfield's own: how much of the sky each point
+         * can see past the relief around it, which darkens the foot of every scarp and
+         * the floor of every gully. And contact shade under everything standing on the
+         * ground — a bush without the dark patch under it is floating, however well its
+         * shadow is drawn, because the shadow moves with the sun and the patch does not.
+         *
+         * @returns {Float32Array} Multipliers, 1 fully open.
+         */
+        _occlusion(props) {
+            const relief = this.relief;
+            const V = relief.verts;
+            const ao = new Float32Array(V * V);
+
+            const DIRS = 8;
+            const REACH = [2, 5, 10];   // in grid samples
+            for (let j = 0; j < V; j++) {
+                for (let i = 0; i < V; i++) {
+                    const h = relief.at(i, j);
+                    let occ = 0;
+                    for (let d = 0; d < DIRS; d++) {
+                        const a = (d / DIRS) * MathUtils.TAU;
+                        const cx = Math.cos(a), cz = Math.sin(a);
+                        let horizon = 0;
+                        for (const r of REACH) {
+                            const si = MathUtils.clamp(Math.round(i + cx * r), 0, V - 1);
+                            const sj = MathUtils.clamp(Math.round(j + cz * r), 0, V - 1);
+                            const rise = (relief.at(si, sj) - h) / (r / RES);
+                            if (rise > horizon) horizon = rise;
+                        }
+                        occ += Math.atan(horizon) / (Math.PI / 2);
+                    }
+                    ao[j * V + i] = 1 - MathUtils.clamp01(occ / DIRS) * 0.85;
+                }
+            }
+
+            for (const p of props) {
+                const shade = PROP_SHADE[p.type];
+                if (!shade) continue;
+                const radius = shade.radius * p.scale;
+                const i0 = Math.max(0, Math.floor((p.x - radius) * RES));
+                const i1 = Math.min(V - 1, Math.ceil((p.x + radius) * RES));
+                const j0 = Math.max(0, Math.floor((p.y - radius) * RES));
+                const j1 = Math.min(V - 1, Math.ceil((p.y + radius) * RES));
+                for (let j = j0; j <= j1; j++) {
+                    for (let i = i0; i <= i1; i++) {
+                        const d = Math.hypot(i / RES - p.x, j / RES - p.y) / radius;
+                        if (d >= 1) continue;
+                        const f = 1 - d;
+                        ao[j * V + i] *= 1 - shade.depth * f * f;
+                    }
+                }
+            }
+            return ao;
+        }
+
+        /**
+         * The ground material: the vertex colours, finished per pixel.
+         *
+         * Everything that changes about the ground during a run rides in through the
+         * overlay, which is the same trick the fog of war used in Iron Dominion 3D:
+         * leave the simulation writing to its own arrays, and let the material read
+         * them. On top of that sits the detail the vertex grid cannot hold, all sampled
+         * in world space from the one shared noise texture.
          */
         _groundMaterial() {
-            const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-            const n = this.size;
+            const mat = new THREE.MeshPhongMaterial({
+                vertexColors: true,
+                specular: new THREE.Color(0, 0, 0),
+                shininess: 1
+            });
+            mat.extensions = { derivatives: true };
 
-            mat.userData.uniforms = {
-                uOverlay: { value: this.overlay },
-                uOverlayScale: { value: 1 / n },
-                uWorn: { value: WORN },
-                uBurnt: { value: BURNT }
-            };
-
-            mat.onBeforeCompile = (shader) => {
-                Object.assign(shader.uniforms, mat.userData.uniforms);
-
-                shader.vertexShader = 'varying vec2 vGroundXZ;\n' + shader.vertexShader
-                    .replace('#include <begin_vertex>',
-                        '#include <begin_vertex>\n' +
-                        'vGroundXZ = (modelMatrix * vec4(transformed, 1.0)).xz;');
-
-                shader.fragmentShader =
-                    'varying vec2 vGroundXZ;\n' +
-                    'uniform sampler2D uOverlay;\n' +
-                    'uniform float uOverlayScale;\n' +
-                    'uniform vec3 uWorn;\n' +
-                    'uniform vec3 uBurnt;\n' + shader.fragmentShader
-                        .replace('#include <color_fragment>',
-                            '#include <color_fragment>\n' +
-                            'vec4 groundOv = texture2D(uOverlay, vGroundXZ * uOverlayScale);\n' +
-                            'diffuseColor.rgb = mix(diffuseColor.rgb, uWorn, groundOv.r * 0.75);\n' +
-                            'diffuseColor.rgb = mix(diffuseColor.rgb, uBurnt, groundOv.g * 0.85);');
-            };
-            // Force a distinct program from any other Lambert material in the scene.
-            mat.customProgramCacheKey = () => 'safari-ground';
+            Shading3D.patch(mat, 'ground', {
+                uniforms: {
+                    uOverlay: { value: this.overlay },
+                    uOverlayScale: { value: 1 / this.size },
+                    uWorn: { value: WORN },
+                    uBurnt: { value: BURNT },
+                    uCliff: { value: CLIFF },
+                    uCliffDark: { value: CLIFF_DARK }
+                },
+                vertexHead: 'varying vec3 vGroundW;\nvarying vec3 vGroundN;',
+                vertex: [[
+                    '#include <begin_vertex>',
+                    '#include <begin_vertex>\n' +
+                    'vGroundW = (modelMatrix * vec4(transformed, 1.0)).xyz;\n' +
+                    'vGroundN = normalize(mat3(modelMatrix) * objectNormal);'
+                ]],
+                fragmentHead: [
+                    'varying vec3 vGroundW;',
+                    'varying vec3 vGroundN;',
+                    'uniform sampler2D uOverlay;',
+                    'uniform float uOverlayScale;',
+                    'uniform vec3 uWorn;',
+                    'uniform vec3 uBurnt;',
+                    'uniform vec3 uCliff;',
+                    'uniform vec3 uCliffDark;',
+                    // Height of the ground's fine relief, for the bump: the grain, and
+                    // the bedding planes on a cliff. One texture read.
+                    'float groundRelief(vec4 b, float cliff) {',
+                    '  return b.g * 0.5 + b.b * cliff * 0.9;',
+                    '}',
+                    // The overlay, read through a noise-warped, two-tap footprint so a
+                    // grazed or burnt patch has a ragged organic edge, not a tile's.
+                    'vec4 groundOverlay(vec2 p, vec4 d) {',
+                    '  vec2 q = p + (d.rg - 0.5) * 1.8;',
+                    '  return 0.5 * (texture2D(uOverlay, (q + vec2(0.45, 0.2)) * uOverlayScale) +',
+                    '                texture2D(uOverlay, (q - vec2(0.45, 0.2)) * uOverlayScale));',
+                    '}'
+                ].join('\n'),
+                fragment: [
+                    ['#include <color_fragment>', [
+                        '#include <color_fragment>',
+                        'vec2 gp = vGroundW.xz;',
+                        'vec4 d1 = detailAt(gp * 0.035);',
+                        'vec4 d2 = detailAt(gp * 0.11);',
+                        'vec4 d3 = detailAt(gp * 0.029 + 0.37);',
+                        // Broad patches, then a finer grain; nothing finer than the eye
+                        // can resolve at play distance, or it shimmers as the camera moves.
+                        'diffuseColor.rgb *= 0.86 + 0.26 * d1.r;',
+                        'diffuseColor.rgb *= 0.93 + 0.12 * d2.g;',
+                        'diffuseColor.rgb *= 0.95 + 0.08 * d3.g;',
+                        // Faces too steep to hold soil are bare, bedded rock.
+                        'float slope = 1.0 - clamp(vGroundN.y, 0.0, 1.0);',
+                        'float cliff = smoothstep(0.34, 0.58, slope + (d2.g - 0.5) * 0.18);',
+                        // Bedding: thin dark partings between broad pale beds, their
+                        // spacing and weight wandering with the noise so the face never
+                        // reads as a barber's pole.
+                        'float bed = vGroundW.y * 7.0 + d1.r * 5.0 + d2.b * 1.5;',
+                        'float parting = smoothstep(0.82, 0.97, abs(sin(bed)));',
+                        'vec3 rockCol = mix(uCliff, uCliffDark, parting * (0.35 + 0.4 * d2.g));',
+                        'diffuseColor.rgb = mix(diffuseColor.rgb, rockCol * (0.88 + 0.24 * d2.b), cliff);',
+                        'vec4 groundOv = groundOverlay(gp, d2);',
+                        'float worn = smoothstep(0.1, 0.8, groundOv.r);',
+                        'diffuseColor.rgb = mix(diffuseColor.rgb, uWorn * (0.9 + 0.2 * d2.g), worn * 0.7);',
+                        'diffuseColor.rgb = mix(diffuseColor.rgb, uBurnt * (0.85 + 0.3 * d2.g),',
+                        '    smoothstep(0.15, 0.6, groundOv.g) * 0.88);'
+                    ].join('\n')],
+                    ['#include <normal_fragment_maps>', [
+                        '#include <normal_fragment_maps>',
+                        // Bump from the relief's gradient, taken in world space by
+                        // finite differences, so a low sun rakes across the grain of the
+                        // ground. Screen-space derivatives would be cheaper and come out
+                        // as a visible grid of 2x2 pixel blocks.
+                        '{',
+                        // Forward differences from the centre sample the colour pass
+                        // already took: two extra reads rather than four.
+                        '  float e = 0.22;',
+                        '  float h0 = groundRelief(d2, cliff);',
+                        '  float gx = groundRelief(detailAt((gp + vec2(e, 0.0)) * 0.11), cliff) - h0;',
+                        '  float gz = groundRelief(detailAt((gp + vec2(0.0, e)) * 0.11), cliff) - h0;',
+                        '  vec3 bumped = normalize(vGroundN - vec3(gx, 0.0, gz) * (0.5 / e));',
+                        '  normal = normalize((viewMatrix * vec4(bumped, 0.0)).xyz);',
+                        '}'
+                    ].join('\n')]
+                ]
+            });
             return mat;
         }
 
         /**
          * A wall around the reserve, dropping away from the boundary.
          *
-         * Without it the map ends in a paper-thin edge you can see the sky through from
-         * any low camera angle, which reads as a bug rather than as a boundary.
+         * The horizon beyond now covers the edge from every angle the camera reaches,
+         * but the wall stays as the backstop under it: a gap anywhere between the two
+         * shows sky through the world, which reads as a bug rather than as distance.
          */
         _buildSkirt() {
-            const w = this.world;
+            const relief = this.relief;
             const n = this.size;
             const edge = R3D.col('#8a7c63');
             const deep = R3D.col('#4a4136');
@@ -324,13 +466,12 @@
             const count = n * RES + 1;
 
             const emit = (x, z, nx, nz) => {
-                const top = R3D.surfaceY(w, x, z);
+                const top = relief.heightAt(x, z);
                 positions.push(x, top, z, x, top - SKIRT, z);
                 normals.push(nx, 0, nz, nx, 0, nz);
                 colors.push(edge.r, edge.g, edge.b, deep.r, deep.g, deep.b);
             };
 
-            // Four runs around the perimeter, each emitting a top and bottom vertex.
             const runs = [
                 { fx: (t) => t, fz: () => 0, nx: 0, nz: -1 },
                 { fx: () => n, fz: (t) => t, nx: 1, nz: 0 },
@@ -368,177 +509,80 @@
         /**
          * The pool surfaces.
          *
-         * **Water is level.** That sounds too obvious to state, and it is the whole
-         * fix: the first version put each surface vertex at the ground height beneath
-         * it, which meets the terrain perfectly at the shoreline and is wrong
-         * everywhere else. A pool lying across any slope became a tilted sheet, and any
-         * rise inside its outline stood up through the water — lakes with mountains in
-         * them.
-         *
-         * So the pools are found as connected regions first, each is given one surface
-         * height, and the mesh is emitted only where the ground is actually below that
-         * height. Ground that is above it stops being a mountain in a lake and becomes
-         * what it always was: an island, or the bank.
+         * **Water is level.** Each pool has one height (see Relief3D), and the surface is
+         * cut from the terrain grid exactly where the shaped ground lies below it: every
+         * grid triangle is clipped against the level, so the shoreline is the true
+         * contour of the bank rather than a staircase of whole quads. The depth at each
+         * corner rides along as an attribute, which is all the shader needs to fade the
+         * edge, colour the deep water and throw foam on the shallows.
          */
         _buildWater() {
-            const w = this.world;
-            const n = this.size;
+            const relief = this.relief;
+            const V = relief.verts;
             const step = 1 / RES;
-            const verts = n * RES + 1;
 
-            /* --- Find the pools ------------------------------------------ */
-            const region = new Int32Array(n * n).fill(-1);
-            const levels = [];
-            const stack = [];
-
-            for (let ty = 0; ty < n; ty++) {
-                for (let tx = 0; tx < n; tx++) {
-                    const k = ty * n + tx;
-                    if (region[k] >= 0) continue;
-                    if (R3D.waterCarve(w, tx + 0.5, ty + 0.5) <= 0.01) continue;
-
-                    // Flood fill this pool, collecting the ground under it as we go.
-                    const id = levels.length;
-                    const heights = [];
-                    stack.length = 0;
-                    stack.push(k);
-                    region[k] = id;
-
-                    while (stack.length) {
-                        const c = stack.pop();
-                        const cx = c % n;
-                        const cy = (c / n) | 0;
-                        heights.push(R3D.surfaceY(w, cx + 0.5, cy + 0.5));
-
-                        for (let d = 0; d < 4; d++) {
-                            const nx = cx + (d === 0 ? 1 : d === 1 ? -1 : 0);
-                            const ny = cy + (d === 2 ? 1 : d === 3 ? -1 : 0);
-                            if (nx < 0 || ny < 0 || nx >= n || ny >= n) continue;
-                            const nk = ny * n + nx;
-                            if (region[nk] >= 0) continue;
-                            if (R3D.waterCarve(w, nx + 0.5, ny + 0.5) <= 0.01) continue;
-                            region[nk] = id;
-                            stack.push(nk);
-                        }
-                    }
-
-                    /*
-                     * The surface height for the pool: the brim of its own basin.
-                     *
-                     * Measured against the *carved* terrain, not the ground the carve
-                     * was subtracted from. The basin meets the untouched ground at the
-                     * shoreline, so an upper percentile of the carved surface is the rim
-                     * — fill to there and the water reaches the bank and stops. Taking
-                     * it from the uncarved ground instead sets the level a whole basin
-                     * depth too high, and the pool spreads a thin film over every flat
-                     * acre around it, which is what the first attempt did.
-                     *
-                     * A percentile rather than the maximum, because one high tile at the
-                     * edge should not raise the whole lake.
-                     */
-                    heights.sort((a, b) => a - b);
-                    const pick = heights[Math.min(heights.length - 1,
-                        Math.floor(heights.length * 0.86))];
-                    levels.push(pick);
-                }
-            }
-
-            if (!levels.length) {
-                if (this.water) {
-                    this.scene.remove(this.water);
-                    this.water.geometry.dispose();
-                    this.water = null;
-                }
-                return;
-            }
-
-            /* --- Emit a level surface over each ---------------------------- */
             const positions = [];
-            const colors = [];
-            const indices = [];
-            const map = new Int32Array(verts * verts).fill(-1);
+            const depths = [];
 
-            const shallow = R3D.col('#5f9fae');
-            const deep = R3D.col('#245c70');
+            // Scratch polygon for clipping one triangle.
+            const px = new Float32Array(4), pz = new Float32Array(4), pd = new Float32Array(4);
 
-            /** Which pool a sub-grid point belongs to, searching a tile either way. */
-            const regionAt = (i, j) => {
-                const tx = Math.min(n - 1, Math.max(0, Math.floor(i * step)));
-                const ty = Math.min(n - 1, Math.max(0, Math.floor(j * step)));
-                const here = region[ty * n + tx];
-                if (here >= 0) return here;
-                // One ring out, so the fade has somewhere to happen past the last wet
-                // tile rather than being clipped by it.
-                for (let dy = -1; dy <= 1; dy++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const qx = tx + dx, qy = ty + dy;
-                        if (qx < 0 || qy < 0 || qx >= n || qy >= n) continue;
-                        const r = region[qy * n + qx];
-                        if (r >= 0) return r;
+            const emitTri = (level, ax, az, ad, bx, bz, bd, cx, cz, cd) => {
+                // Sutherland–Hodgman against depth > 0, on a single triangle.
+                const inX = [ax, bx, cx], inZ = [az, bz, cz], inD = [ad, bd, cd];
+                let count = 0;
+                for (let e = 0; e < 3; e++) {
+                    const i0 = e, i1 = (e + 1) % 3;
+                    const d0 = inD[i0], d1 = inD[i1];
+                    if (d0 > 0) {
+                        px[count] = inX[i0]; pz[count] = inZ[i0]; pd[count] = d0; count++;
+                    }
+                    if ((d0 > 0) !== (d1 > 0)) {
+                        const t = d0 / (d0 - d1);
+                        px[count] = inX[i0] + (inX[i1] - inX[i0]) * t;
+                        pz[count] = inZ[i0] + (inZ[i1] - inZ[i0]) * t;
+                        pd[count] = 0;
+                        count++;
                     }
                 }
-                return -1;
+                // Fan out in the input's order, which is the ground's upward winding.
+                for (let k = 1; k + 1 < count; k++) {
+                    positions.push(px[0], level, pz[0], px[k], level, pz[k],
+                        px[k + 1], level, pz[k + 1]);
+                    depths.push(pd[0], pd[k], pd[k + 1]);
+                }
             };
 
-            const vertexAt = (i, j, id) => {
-                const key = j * verts + i;
-                if (map[key] >= 0) return map[key];
-                const tx = i * step, tz = j * step;
-                const level = levels[id];
-                const idx = positions.length / 3;
+            for (let j = 0; j < V - 1; j++) {
+                for (let i = 0; i < V - 1; i++) {
+                    let pool = relief.poolAt(i, j);
+                    if (pool < 0) pool = relief.poolAt(i + 1, j + 1);
+                    if (pool < 0) continue;
+                    const level = relief.levelOf(pool);
 
-                positions.push(tx, level, tz);
+                    const da = level - relief.at(i, j);
+                    const db = level - relief.at(i + 1, j);
+                    const dc = level - relief.at(i, j + 1);
+                    const dd = level - relief.at(i + 1, j + 1);
+                    if (da <= 0 && db <= 0 && dc <= 0 && dd <= 0) continue;
 
-                /*
-                 * Depth below the surface drives both colour and alpha, so the water
-                 * darkens toward the middle and fades out where the bed rises to meet
-                 * it. That fade is the shoreline: without it the mesh has to stop on a
-                 * quad boundary, and wherever that is reads as a staircase.
-                 */
-                const depth = Math.max(0, level - R3D.surfaceY(w, tx, tz));
-                _c.copy(shallow).lerp(deep, MathUtils.clamp01(depth * 2.6));
-                colors.push(_c.r, _c.g, _c.b, MathUtils.clamp01(depth * 11));
-                map[key] = idx;
-                return idx;
-            };
-
-            /** Is there water over this point at all? */
-            const submerged = (i, j, id) =>
-                R3D.surfaceY(w, i * step, j * step) < levels[id];
-
-            for (let j = 0; j < verts - 1; j++) {
-                for (let i = 0; i < verts - 1; i++) {
-                    const id = regionAt(i, j);
-                    if (id < 0) continue;
-                    // Skip the quad only if every corner is dry land above the level;
-                    // one wet corner still needs a face for the shoreline to fade on.
-                    if (!submerged(i, j, id) && !submerged(i + 1, j, id) &&
-                        !submerged(i, j + 1, id) && !submerged(i + 1, j + 1, id)) {
-                        continue;
-                    }
-                    const a = vertexAt(i, j, id);
-                    const b = vertexAt(i + 1, j, id);
-                    const c = vertexAt(i, j + 1, id);
-                    const d = vertexAt(i + 1, j + 1, id);
-                    indices.push(a, c, b, b, c, d);
+                    const x0 = i * step, x1 = (i + 1) * step;
+                    const z0 = j * step, z1 = (j + 1) * step;
+                    emitTri(level, x0, z0, da, x0, z1, dc, x1, z0, db);
+                    emitTri(level, x1, z0, db, x0, z1, dc, x1, z1, dd);
                 }
             }
 
             if (this.water) {
                 this.scene.remove(this.water);
                 this.water.geometry.dispose();
-            }
-            if (!indices.length) {
                 this.water = null;
-                return;
             }
+            if (!positions.length) return;
 
             const geo = new THREE.BufferGeometry();
             geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            // Four components: the fourth is the shoreline fade.
-            geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 4));
-            geo.setIndex(indices);
-            geo.computeVertexNormals();
+            geo.setAttribute('aDepth', new THREE.Float32BufferAttribute(depths, 1));
             geo.computeBoundingSphere();
 
             if (!this.waterMaterial) this.waterMaterial = this._waterMaterial();
@@ -547,36 +591,130 @@
             this.scene.add(this.water);
         }
 
-        /** Translucent, specular, and rippling — the ripple is a vertex displacement. */
+        /**
+         * Water, shaded as water.
+         *
+         * A custom shader rather than a patched Phong: nearly everything that makes water
+         * look like water is view-dependent — how much sky it reflects, where the sun
+         * glints — and none of it is diffuse lighting. It reads the hour's sky and the
+         * key light, set each frame by `setLighting`.
+         */
         _waterMaterial() {
-            const mat = new THREE.MeshPhongMaterial({
-                vertexColors: true,
-                transparent: true,
-                opacity: 0.86,
-                // Enough sheen for the sun to walk across a pool at dusk, not enough to
-                // blow the near shore out to white when the camera drops to the water.
-                shininess: 60,
-                specular: R3D.col('#6e8f9c'),
-                depthWrite: false,
-                side: THREE.DoubleSide
-            });
+            const uniforms = THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+                uZenith: { value: new THREE.Color() },
+                uHorizon: { value: new THREE.Color() },
+                uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+                uSunColor: { value: new THREE.Color() },
+                uLight: { value: 1 },
+                uShallow: { value: R3D.col('#4f8f94') },
+                uDeep: { value: R3D.col('#173f4c') }
+            }]);
+            // The shared clock and detail texture are referenced, not merged, so they
+            // stay live.
+            uniforms.uTime = Shading3D.SHARED.uTime;
+            uniforms.uWind = Shading3D.SHARED.uWind;
+            uniforms.uDetail = Shading3D.SHARED.uDetail;
+            Shading3D.detailTexture();
 
-            mat.userData.uniforms = { uTime: { value: 0 } };
-            mat.onBeforeCompile = (shader) => {
-                Object.assign(shader.uniforms, mat.userData.uniforms);
-                shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader
-                    .replace('#include <begin_vertex>',
-                        '#include <begin_vertex>\n' +
-                        'float rip = sin(position.x * 3.1 + uTime * 1.7) * 0.5 +\n' +
-                        '            sin(position.z * 2.6 - uTime * 1.3) * 0.5;\n' +
-                        'transformed.y += rip * 0.018;\n' +
-                        'objectNormal = normalize(objectNormal + vec3(\n' +
-                        '   cos(position.x * 3.1 + uTime * 1.7) * 0.09, 0.0,\n' +
-                        '   cos(position.z * 2.6 - uTime * 1.3) * 0.07));\n' +
-                        'vNormal = normalize(normalMatrix * objectNormal);');
-            };
-            mat.customProgramCacheKey = () => 'safari-water';
-            return mat;
+            return new THREE.ShaderMaterial({
+                uniforms,
+                transparent: true,
+                depthWrite: false,
+                fog: true,
+                extensions: { derivatives: true },
+                vertexShader: [
+                    Shading3D.GLSL_COMMON,
+                    'attribute float aDepth;',
+                    'varying float vDepth;',
+                    'varying vec3 vWorld;',
+                    '#include <fog_pars_vertex>',
+                    'void main() {',
+                    '  vDepth = aDepth;',
+                    '  vec4 wp = modelMatrix * vec4(position, 1.0);',
+                    '  wp.y += (sin(wp.x * 1.7 + uTime * 1.1) + sin(wp.z * 1.3 - uTime * 0.9)) * 0.005;',
+                    '  vWorld = wp.xyz;',
+                    '  vec4 mvPosition = viewMatrix * wp;',
+                    '  gl_Position = projectionMatrix * mvPosition;',
+                    '  #include <fog_vertex>',
+                    '}'
+                ].join('\n'),
+                fragmentShader: [
+                    Shading3D.GLSL_COMMON,
+                    'uniform vec3 uZenith;',
+                    'uniform vec3 uHorizon;',
+                    'uniform vec3 uSunDir;',
+                    'uniform vec3 uSunColor;',
+                    'uniform float uLight;',
+                    'uniform vec3 uShallow;',
+                    'uniform vec3 uDeep;',
+                    'varying float vDepth;',
+                    'varying vec3 vWorld;',
+                    '#include <fog_pars_fragment>',
+
+                    // Two broad swells crossing at an angle: a pool is wind-ruffled, not
+                    // boiling. The detail texture's grain channel, sampled large.
+                    'float ripple(vec2 p) {',
+                    '  float t = uTime * (0.5 + uWind * 0.4);',
+                    '  return detailAt(p * 0.045 + vec2(t * 0.004, t * 0.0025)).g * 0.6 +',
+                    '         detailAt(p.yx * 0.07 - vec2(t * 0.006, -t * 0.004)).g * 0.4;',
+                    '}',
+
+                    'void main() {',
+                    '  vec2 p = vWorld.xz;',
+                    '  float e = 0.12;',
+                    '  float hx = ripple(p + vec2(e, 0.0)) - ripple(p - vec2(e, 0.0));',
+                    '  float hz = ripple(p + vec2(0.0, e)) - ripple(p - vec2(0.0, e));',
+                    '  float strength = 0.05 + uWind * 0.04;',
+                    '  vec3 n = normalize(vec3(-hx * strength / e, 1.0, -hz * strength / e));',
+
+                    '  vec3 v = normalize(cameraPosition - vWorld);',
+                    '  float cosV = max(dot(n, v), 0.0);',
+                    '  float fresnel = 0.03 + 0.97 * pow(1.0 - cosV, 5.0);',
+
+                    '  vec3 r = reflect(-v, n);',
+                    '  vec3 sky = mix(uHorizon, uZenith, smoothstep(0.0, 0.6, r.y));',
+                    '  float spec = pow(max(dot(r, uSunDir), 0.0), 320.0) * 5.0 +',
+                    '               pow(max(dot(r, uSunDir), 0.0), 24.0) * 0.18;',
+
+                    // Light is absorbed with depth: shallows show the bed, deep water
+                    // goes dark teal.
+                    '  float absorb = 1.0 - exp(-vDepth * 4.5);',
+                    '  vec3 body = mix(uShallow, uDeep, absorb) * uLight;',
+                    '  vec3 col = mix(body, sky, fresnel) + uSunColor * spec;',
+
+                    // A thin lick of foam where the water meets the bank.
+                    '  float edge = 1.0 - smoothstep(0.0, 0.05, vDepth);',
+                    '  float froth = smoothstep(0.5, 0.8, detailAt(p * 0.35 + uTime * 0.01).b);',
+                    '  col = mix(col, vec3(0.80, 0.80, 0.74) * uLight, edge * froth * 0.35);',
+
+                    '  float alpha = clamp(0.45 + absorb * 0.5 + fresnel * 0.4, 0.0, 0.96);',
+                    '  alpha *= smoothstep(0.0, 0.025, vDepth);',
+                    '  gl_FragColor = vec4(col, alpha);',
+                    '  #include <tonemapping_fragment>',
+                    '  #include <encodings_fragment>',
+                    '  #include <fog_fragment>',
+                    '}'
+                ].join('\n')
+            });
+        }
+
+        /**
+         * Hand the water the hour's sky and key light.
+         *
+         * @param {object} light The sampled `LightingState`.
+         * @param {THREE.Vector3} keyDir Direction toward the key light (sun or moon).
+         * @param {THREE.Color} keyColor The key light's colour times its intensity.
+         */
+        setLighting(light, keyDir, keyColor) {
+            if (!this.waterMaterial) return;
+            const u = this.waterMaterial.uniforms;
+            const top = light.sky[0].c;
+            const low = light.sky[light.sky.length - 1].c;
+            u.uZenith.value.setRGB(top.r / 255, top.g / 255, top.b / 255).convertSRGBToLinear();
+            u.uHorizon.value.setRGB(low.r / 255, low.g / 255, low.b / 255).convertSRGBToLinear();
+            u.uSunDir.value.copy(keyDir);
+            u.uSunColor.value.copy(keyColor);
+            u.uLight.value = 0.25 + light.sunStrength * 0.85;
         }
 
         /* -------------------------------------------------------------- *
@@ -589,10 +727,6 @@
          * @param {Set<number>} [burnt] Burnt tile indices.
          */
         update(dt, now, burnt) {
-            if (this.waterMaterial) {
-                this.waterMaterial.userData.uniforms.uTime.value += dt;
-            }
-
             this._overlayTimer -= dt;
             if (this._overlayTimer <= 0) {
                 this._overlayTimer = 0.25;
@@ -600,10 +734,9 @@
             }
 
             /*
-             * A drought lowers every pool, which changes the shoreline. Rebuilding the
-             * surface is a few hundred triangles and only happens when the drawdown has
-             * actually moved, so the pools visibly shrink across a drought and refill
-             * afterwards without the terrain being regenerated.
+             * A drought lowers every pool, which changes the shoreline. The surface is
+             * re-cut from the same shaped ground, so the pools visibly shrink down their
+             * banks across a drought and refill afterwards.
              */
             const draw = this.world.drawdown || 0;
             if (Math.abs(draw - this._drawdown) > 0.015) {

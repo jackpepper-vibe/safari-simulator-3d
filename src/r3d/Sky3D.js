@@ -22,7 +22,69 @@
 
     const _dir = new THREE.Vector3();
     const _c = new THREE.Color();
+    const _c2 = new THREE.Color();
     const WHITE = new THREE.Color(1, 1, 1);
+
+    /**
+     * One cumulus cloud, painted: puffs piled on a flat base, lit from above.
+     * @param {Safari.Rng} rng
+     */
+    function cumulusTexture(rng) {
+        const W = 512, H = 256;
+        const canvas = Safari.Utils.createCanvas(W, H);
+        const ctx = canvas.getContext('2d');
+        const base = H * 0.78;
+
+        const puffs = [];
+        const heads = 5 + ((rng.next() * 4) | 0);
+        for (let i = 0; i < heads; i++) {
+            const cx = W * (0.18 + 0.64 * (i + rng.next() * 0.6) / heads);
+            const r = H * rng.range(0.16, 0.30) * (1 - Math.abs(cx / W - 0.5) * 0.9);
+            // Each head is a cluster of smaller puffs, which is what gives the edge its
+            // cauliflower texture.
+            for (let k = 0; k < 9; k++) {
+                const a = rng.range(Math.PI, Math.PI * 2);
+                const d = rng.range(0, r * 0.7);
+                puffs.push({
+                    x: cx + Math.cos(a) * d,
+                    y: Math.min(base - r * 0.35, base - r + Math.sin(a) * d * 0.8),
+                    r: r * rng.range(0.45, 0.8)
+                });
+            }
+        }
+
+        // Shadowed underside first, then the lit heads over it.
+        for (const pass of [0, 1]) {
+            for (const p of puffs) {
+                const g = ctx.createRadialGradient(p.x, p.y - p.r * 0.35, p.r * 0.1, p.x, p.y, p.r);
+                if (pass === 0) {
+                    g.addColorStop(0, 'rgba(196,202,212,0.9)');
+                    g.addColorStop(1, 'rgba(176,184,196,0)');
+                } else {
+                    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+                    g.addColorStop(0.55, 'rgba(236,240,245,0.6)');
+                    g.addColorStop(1, 'rgba(220,226,234,0)');
+                }
+                ctx.fillStyle = g;
+                ctx.beginPath();
+                ctx.arc(p.x, pass === 0 ? p.y + p.r * 0.15 : p.y, p.r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Cut the base flat with a soft edge: cumulus sit on a level condensation line.
+        ctx.globalCompositeOperation = 'destination-out';
+        const cut = ctx.createLinearGradient(0, base - 10, 0, base + 14);
+        cut.addColorStop(0, 'rgba(0,0,0,0)');
+        cut.addColorStop(1, 'rgba(0,0,0,1)');
+        ctx.fillStyle = cut;
+        ctx.fillRect(0, base - 10, W, H - base + 10);
+        ctx.globalCompositeOperation = 'source-over';
+
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.encoding = THREE.sRGBEncoding;
+        return tex;
+    }
 
     /* ------------------------------------------------------------------ *
      * Textures
@@ -58,13 +120,23 @@
             this.scene = scene;
             this.worldTiles = worldTiles;
 
+            /** Direction toward the key light, and its colour times intensity. */
+            this.keyDirection = new THREE.Vector3(0, 1, 0);
+            this.keyRadiance = new THREE.Color(1, 1, 1);
+
             this._buildDome();
             this._buildStars(rng);
             this._buildBodies();
             this._buildClouds(rng);
             this._buildLights();
 
-            this.scene.fog = new THREE.Fog(0xbcd0d8, 60, 340);
+            /*
+             * Exponential-squared fog: clear across the reserve, thickening steadily
+             * with distance, so the hills beyond the fence recede into blue haze and the
+             * ranges on the horizon are silhouettes. The old linear fog had to close in
+             * short of the map's edge to hide it; with land beyond, it no longer does.
+             */
+            this.scene.fog = new THREE.FogExp2(0xbcd0d8, 0.0026);
         }
 
         /* -------------------------------------------------------------- *
@@ -93,7 +165,9 @@
                 uniforms: {
                     uColors: { value: colors },
                     uStops: { value: stops },
-                    uHaze: { value: new THREE.Color(0.8, 0.8, 0.8) }
+                    uHaze: { value: new THREE.Color(0.8, 0.8, 0.8) },
+                    uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+                    uSunGlow: { value: new THREE.Color(0, 0, 0) }
                 },
                 vertexShader: [
                     'varying vec3 vDir;',
@@ -106,15 +180,30 @@
                     'uniform vec3 uColors[5];',
                     'uniform float uStops[5];',
                     'uniform vec3 uHaze;',
+                    'uniform vec3 uSunDir;',
+                    'uniform vec3 uSunGlow;',
                     'varying vec3 vDir;',
                     'void main() {',
-                    // p runs 0 at the zenith to 1 at the horizon, matching the keyframes.
-                    '  float p = clamp(1.0 - clamp(vDir.y, 0.0, 1.0), 0.0, 1.0);',
+                    /*
+                     * p runs 0 at the zenith to 1 at the horizon, matching the keyframes.
+                     *
+                     * Through a square root rather than linearly in height. The camera
+                     * mostly looks at the lowest twenty degrees of sky, and a linear map
+                     * spent all of that on the pale horizon stops — so noon read as a
+                     * white-grey ceiling. The curve keeps the blue down to where the eye
+                     * actually is and saves the pale band for the horizon itself.
+                     */
+                    '  float p = 1.0 - sqrt(clamp(vDir.y, 0.0, 1.0));',
                     '  vec3 c = uColors[0];',
                     '  for (int i = 0; i < 4; i++) {',
                     '    float t = smoothstep(uStops[i], uStops[i + 1], p);',
                     '    c = mix(c, uColors[i + 1], t);',
                     '  }',
+                    // Forward scatter around the sun: a broad warm glow and a tight halo,
+                    // strongest low in the sky, where the light has the most air to cross.
+                    '  float mu = max(dot(vDir, uSunDir), 0.0);',
+                    '  float low = 1.0 - clamp(vDir.y * 2.5, 0.0, 1.0);',
+                    '  c += uSunGlow * (pow(mu, 5.0) * (0.12 + 0.30 * low) + pow(mu, 60.0) * 0.55);',
                     // Below the horizon the dome fades into the haze band, so a low
                     // camera sees atmosphere rather than a hard edge under the terrain.
                     '  float below = smoothstep(0.0, -0.18, vDir.y);',
@@ -213,23 +302,36 @@
          * the camera reaches, the difference is invisible and the cost is not.
          */
         _buildClouds(rng) {
-            const tex = blobTexture(0.35);
-            this.cloudMaterial = new THREE.SpriteMaterial({
-                map: tex, transparent: true, depthWrite: false, fog: false,
-                opacity: 0.5, color: 0xffffff
-            });
+            /*
+             * Fair-weather cumulus, painted.
+             *
+             * A soft blob reads as a smudge. What says "cloud" is a flat grey base with
+             * billowing, sunlit heads piled on it, so each texture is built from a few
+             * dozen overlapping puffs, shaded brighter toward the top, over a flattened
+             * base. Three variants keep the sky from repeating.
+             */
+            this.cloudMaterials = [];
+            for (let v = 0; v < 3; v++) {
+                this.cloudMaterials.push(new THREE.SpriteMaterial({
+                    map: cumulusTexture(rng), transparent: true, depthWrite: false,
+                    fog: false, opacity: 0.9, color: 0xffffff
+                }));
+            }
 
             this.clouds = [];
             const n = this.worldTiles;
-            for (let i = 0; i < Config.render.cloudCount; i++) {
-                const s = new THREE.Sprite(this.cloudMaterial);
-                const w = rng.range(45, 110);
-                s.scale.set(w, w * rng.range(0.28, 0.46), 1);
-                s.position.set(
-                    rng.range(-n, n * 2),
-                    rng.range(48, 78),
-                    rng.range(-n, n * 2));
+            const c = n / 2;
+            const count = Math.max(Config.render.cloudCount, 22);
+            for (let i = 0; i < count; i++) {
+                const s = new THREE.Sprite(this.cloudMaterials[i % 3]);
+                const w = rng.range(60, 150);
+                s.scale.set(w, w * rng.range(0.42, 0.58), 1);
+                // Mostly out toward the horizon, where the camera actually sees sky.
+                const a = rng.range(0, MathUtils.TAU);
+                const r = rng.range(120, 360);
+                s.position.set(c + Math.cos(a) * r, rng.range(70, 130), c + Math.sin(a) * r);
                 s.renderOrder = -97;
+                s.userData.orbit = { angle: a, radius: r };
                 this.clouds.push(s);
                 this.scene.add(s);
             }
@@ -314,22 +416,30 @@
                 .convertSRGBToLinear();
 
             /* --- Fog ----------------------------------------------------- */
-            // The haze band the 2D build drew at the horizon is the fog colour here, so
-            // distance still washes out toward the same tone at every hour.
             /*
-             * Fog closes in far enough to swallow the boundary.
-             *
-             * The reserve is 86 tiles square and its edge is a cliff into nothing; from
-             * a low camera that edge draws a hard line across the sky. Pulling the far
-             * plane inside the map diagonal turns the boundary into distance, which is
-             * what the 2D build's horizon haze was doing by other means.
+             * The haze band the 2D build drew at the horizon is the fog colour here,
+             * leaned toward the sky's own horizon so distant land fades into the colour
+             * of the sky behind it rather than into a flat grey. It thins as the camera
+             * pulls back, so a wide view of the reserve is not a view of fog.
              */
-            this.scene.fog.color.copy(u.uHaze.value);
-            this.scene.fog.near = 22 + rig.dist * 0.9;
-            this.scene.fog.far = 105 + rig.dist * 2.8;
+            const horizonStop = light.sky[light.sky.length - 1].c;
+            _c.setRGB(horizonStop.r / 255, horizonStop.g / 255, horizonStop.b / 255)
+                .convertSRGBToLinear();
+            this.scene.fog.color.copy(u.uHaze.value).lerp(_c, 0.4);
+            // And a touch of the zenith, so the far hills read blue rather than chalk.
+            const zenith = light.sky[0].c;
+            _c.setRGB(zenith.r / 255, zenith.g / 255, zenith.b / 255).convertSRGBToLinear();
+            this.scene.fog.color.lerp(_c, 0.22);
+            this.scene.fog.density = MathUtils.lerp(0.0030, 0.0017,
+                MathUtils.clamp01(rig.dist / 140));
 
             /* --- Celestial geometry --------------------------------------- */
             this._bodyDirection(light.sunAzimuth, light.sunAltitude, _dir);
+            u.uSunDir.value.copy(_dir);
+            _c.setRGB(light.sunTint.r / 255, light.sunTint.g / 255, light.sunTint.b / 255)
+                .convertSRGBToLinear();
+            u.uSunGlow.value.copy(_c).multiplyScalar(
+                MathUtils.clamp01(light.sunAltitude * 4 + 0.6) * (0.5 + light.sunStrength * 0.5));
             this.sun.position.copy(cam.position).addScaledVector(_dir, DOME * 0.86);
             this.sunMaterial.opacity = MathUtils.clamp01(light.sunAltitude * 3 + 0.15);
             _c.setRGB(light.sunTint.r / 255, light.sunTint.g / 255, light.sunTint.b / 255);
@@ -364,9 +474,20 @@
             this.key.color.copy(_c);
             this.key.intensity = 0.30 + light.sunStrength * 1.05;
 
-            // Shadows tighten around the player as they zoom in, so a close look at a
-            // herd gets crisp shadows and a wide view still has them everywhere.
-            this._setShadowExtent(MathUtils.clamp(rig.dist * 1.15, 16, 90));
+            // Published for surfaces that shade themselves, like the water's glint.
+            this.keyDirection.copy(_dir);
+            this.keyRadiance.copy(this.key.color).multiplyScalar(
+                sunUp ? this.key.intensity : this.key.intensity * 0.35);
+
+            /*
+             * Shadows tighten around the player as they zoom in, so a close look at a
+             * herd gets crisp shadows and a wide view still has them everywhere. A low
+             * camera sees much further across the ground than a high one at the same
+             * distance, so the extent grows as the pitch drops — otherwise the shadows
+             * stop along a hard line partway to the horizon.
+             */
+            const reach = 1.2 + (1 - Math.sin(rig.pitch)) * 2.2;
+            this._setShadowExtent(MathUtils.clamp(rig.dist * reach, 18, 110));
 
             /* --- Ambient -------------------------------------------------- */
             const horizon = light.sky[light.sky.length - 1].c;
@@ -379,15 +500,25 @@
             this.ambient.intensity = 0.35 + light.ambientAmount * 0.55;
 
             /* --- Clouds ---------------------------------------------------- */
-            const drift = (0.5 + wind * 1.4) * dt;
-            const span = this.worldTiles * 2;
-            for (const c of this.clouds) {
-                c.position.x += drift;
-                if (c.position.x > this.worldTiles * 2) c.position.x -= span * 1.5;
+            // They wheel slowly around the reserve with the wind, so the sky is never
+            // exactly the same twice but a cloud never slides off the edge of the world.
+            const centre = this.worldTiles / 2;
+            const turn = (0.0008 + wind * 0.0016) * dt;
+            for (const cl of this.clouds) {
+                const o = cl.userData.orbit;
+                o.angle += turn * (180 / o.radius);
+                cl.position.x = centre + Math.cos(o.angle) * o.radius;
+                cl.position.z = centre + Math.sin(o.angle) * o.radius;
             }
-            _c.setRGB(light.haze.r / 255, light.haze.g / 255, light.haze.b / 255);
-            this.cloudMaterial.color.copy(_c).lerp(WHITE, 0.35);
-            this.cloudMaterial.opacity = 0.16 + light.daylight * 0.30;
+            // Lit by the sun's colour by day, the haze's at the ends of it, and barely
+            // there at night.
+            _c.setRGB(light.sunTint.r / 255, light.sunTint.g / 255, light.sunTint.b / 255);
+            _c2.setRGB(light.haze.r / 255, light.haze.g / 255, light.haze.b / 255);
+            _c.lerp(_c2, 0.35).lerp(WHITE, 0.25 * light.daylight);
+            for (const m of this.cloudMaterials) {
+                m.color.copy(_c).multiplyScalar(0.35 + light.daylight * 0.65);
+                m.opacity = 0.25 + light.daylight * 0.65;
+            }
         }
 
         /**

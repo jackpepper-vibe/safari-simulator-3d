@@ -118,53 +118,134 @@
      * ------------------------------------------------------------------ */
 
     /**
-     * Per-vertex colouring for a marked hide.
+     * Marking kinds, as the hide shader numbers them.
      *
-     * The 2D build drew stripes and patches as paths over the body. Here they are a
-     * function of position on the unit sphere the torso is scaled from, evaluated once
-     * at build time and baked into the vertex colours — no texture, no UV unwrap, and
-     * a zebra still reads as a zebra from any angle.
-     *
-     * @returns {function(number,number,number):THREE.Color|null}
+     * Markings used to be baked into vertex colours, which limited a zebra's stripes to
+     * the resolution of the mesh: the edges came out as smeared blotches and the animal
+     * read as a Dalmatian. They are now evaluated per pixel from a position every vertex
+     * carries in the animal's own normalised body space — so they are crisp at any
+     * distance and ride with the skin as it bends.
      */
-    function markingFn(spec, base, seed) {
+    const MARK = {
+        NONE: 0,
+        ZEBRA: 1,       // bold bands, turning to horizontals over the haunch
+        RETICULATED: 2, // a giraffe's polygons, separated by pale lines
+        SPOTS: 3,       // a fawn's dapples, along the back and flanks
+        TIGER: 4,       // thin, broken, forking stripes
+        BANDS: 5,       // horizontal rings down a leg
+        HIDE: 6         // no pattern: countershading and grain only
+    };
+
+    /** Which marking kind a species' spec asks for. */
+    function markKind(spec) {
         const m = spec.markings;
-        if (!m) return null;
-        const mark = R3D.col(m.color);
-        const alpha = m.alpha === undefined ? 1 : m.alpha;
+        if (!m) return MARK.HIDE;
+        if (m.type === 'stripes') return spec.id === 'tiger' ? MARK.TIGER : MARK.ZEBRA;
+        if (m.type === 'patches') return MARK.RETICULATED;
+        return MARK.SPOTS;
+    }
 
-        if (m.type === 'stripes') {
-            const n = m.count * 0.55;
-            return (x, y, z) => {
-                // Stripes run around the barrel, bending as they cross the flank.
-                const bend = z * 0.35 + Math.abs(y) * 0.25;
-                const s = Math.sin((x * n + bend) * Math.PI);
-                // Broad bands with a hard edge. Narrower ones vanished under a strong
-                // sun on a near-white hide, which is the opposite of what a zebra is for.
-                const k = MathUtils.clamp01((Math.abs(s) - 0.42) * 4.5);
-                return _col.copy(base).lerp(mark, (1 - k) * alpha);
-            };
-        }
+    let _hideMat = null;
 
-        if (m.type === 'patches') {
-            const f = 1.9;
-            return (x, y, z) => {
-                // Reticulated: a low-frequency cellular field thresholded hard, so the
-                // patches have the flat edges a giraffe's do.
-                const v = Noise.fbm2(x * f + seed, (y * 1.3 + z) * f + seed * 0.3, 2, 2.1, 0.55);
-                const k = MathUtils.smoothstep(0.46, 0.54, v);
-                return _col.copy(base).lerp(mark, k * alpha);
-            };
-        }
+    /**
+     * The shared material for every animal: the reserve's skinned Phong, taught to
+     * paint hides.
+     *
+     * Two attributes drive it. `aMark` is the marking's colour (already blended with
+     * the hide by the species' alpha) and its kind; `aMarkPos` is the vertex's position
+     * in normalised body space, plus a frequency. Everything else — the patterns, their
+     * antialiased edges, countershading, and a faint grain — is worked out per pixel.
+     */
+    function hideMaterial() {
+        if (_hideMat) return _hideMat;
+        const mat = R3D.skinnedMaterial();
+        mat.extensions = { derivatives: true };
+        Safari.Shading3D.patch(mat, 'hide', {
+            vertexHead: [
+                'attribute vec4 aMark;',
+                'attribute vec4 aMarkPos;',
+                'varying vec4 vMark;',
+                'varying vec4 vMarkPos;'
+            ].join('\n'),
+            vertex: [[
+                '#include <begin_vertex>',
+                '#include <begin_vertex>\nvMark = aMark;\nvMarkPos = aMarkPos;'
+            ]],
+            fragmentHead: [
+                'varying vec4 vMark;',
+                'varying vec4 vMarkPos;',
+                // Antialiased threshold: a hard edge, softened by exactly one pixel.
+                'float band(float v, float edge) {',
+                '  float w = max(fwidth(v), 1e-4);',
+                '  return 1.0 - smoothstep(edge - w, edge + w, v);',
+                '}'
+            ].join('\n'),
+            fragment: [[
+                '#include <color_fragment>',
+                [
+                    '#include <color_fragment>',
+                    'int kind = int(vMark.w + 0.5);',
+                    'if (kind > 0) {',
+                    '  vec3 p = vMarkPos.xyz;',
+                    '  float n = vMarkPos.w;',
+                    '  float k = 0.0;',
+                    '  float warp = detailAt(vec2(p.y * 0.21 + p.z * 0.13, p.x * 0.17) + 0.5).g - 0.5;',
+                    '  if (kind == 1) {',
+                    // Zebra: bands around the barrel, swinging to near-horizontal over
+                    // the haunch the way a real zebra's do, with a wandering edge.
+                    '    float haunch = smoothstep(-0.25, -0.85, p.x);',
+                    '    float u = mix(p.x, -p.y * 0.9 + p.x * 0.35, haunch);',
+                    '    float s = sin((u * n + p.z * 0.12 + abs(p.y) * 0.22 + warp * 0.9) * 3.14159);',
+                    '    k = band(abs(s), 0.45);',
+                    // The belly stays pale.
+                    '    k *= 1.0 - smoothstep(-0.55, -0.9, p.y);',
+                    '  } else if (kind == 2) {',
+                    // Giraffe: cells separated by pale lines, sized to the rig.
+                    '    vec2 c = cellular3(p * vec3(1.0, 1.25, 1.25) * n + warp * 0.6);',
+                    '    k = 1.0 - band(c.y - c.x, 0.11);',
+                    '    k *= 1.0 - smoothstep(-0.45, -0.95, p.y) * 0.7;',
+                    '  } else if (kind == 3) {',
+                    // Fawn dapples: small pale spots along the back and upper flank.
+                    '    vec2 c = cellular3(p * n);',
+                    '    k = band(c.x, 0.2) * smoothstep(-0.15, 0.45, p.y);',
+                    '  } else if (kind == 4) {',
+                    // Tiger: thinner, forking, broken stripes.
+                    '    float s = sin((p.x * n + warp * 2.2 + p.y * 0.35) * 3.14159);',
+                    '    float brk = detailAt(p.xy * 0.4 + p.z * 0.2).b;',
+                    '    k = band(abs(s), 0.16 + brk * 0.18) * smoothstep(0.15, 0.4, brk + 0.2);',
+                    '    k *= 1.0 - smoothstep(-0.5, -0.85, p.y);',
+                    '  } else if (kind == 5) {',
+                    '    float s = sin((p.y * n + warp * 0.3) * 3.14159);',
+                    '    k = band(abs(s), 0.42);',
+                    '  }',
+                    '  diffuseColor.rgb = mix(diffuseColor.rgb, vMark.rgb, k);',
+                    // Countershading — darker along the back, paler underneath — and a
+                    // faint grain, so an unmarked hide is not flat plastic.
+                    '  if (kind != 5) {',
+                    '    diffuseColor.rgb *= 1.0 + 0.10 * smoothstep(0.1, -0.9, p.y) - 0.08 * smoothstep(0.3, 1.0, p.y);',
+                    '  }',
+                    '  diffuseColor.rgb *= 0.94 + 0.12 * detailAt(p.xz * 0.35 + p.y * 0.21).r;',
+                    '}'
+                ].join('\n')
+            ]]
+        });
+        _hideMat = mat;
+        return mat;
+    }
 
-        // Spots: small, sparse, and only along the back.
-        const f = 5.5;
-        return (x, y, z) => {
-            const v = Noise.value2(x * f + seed, (z * f + y * 2.2) + seed);
-            const top = MathUtils.clamp01(y * 1.4 + 0.35);
-            const k = v > 0.74 ? top : 0;
-            return _col.copy(base).lerp(mark, k * alpha);
-        };
+    /**
+     * A private copy of the hide material, for an animal that has to fade or a
+     * translucent placement ghost. A plain `clone()` would drop the shader patch, and
+     * the copy would draw a zebra with no stripes.
+     */
+    function cloneMaterial() {
+        const base = hideMaterial();
+        const copy = base.clone();
+        copy.onBeforeCompile = base.onBeforeCompile;
+        copy.customProgramCacheKey = base.customProgramCacheKey;
+        copy.extensions = base.extensions;
+        copy.userData.uniforms = base.userData.uniforms;
+        return copy;
     }
 
     /* ------------------------------------------------------------------ *
@@ -210,7 +291,23 @@
         const bodyPos = abs('body');
         const neckPos = abs('neck');
         const headPos = abs('head');
-        const marks = markingFn(spec, base, (spec.id || '').length * 7 + 3);
+
+        /*
+         * Marking channels, read by the hide shader. Declared before anything is
+         * emitted, so every vertex carries them; appendages default to no pattern.
+         */
+        const kind = markKind(spec);
+        const markSpec = spec.markings;
+        const markCol = markSpec
+            ? base.clone().lerp(R3D.col(markSpec.color),
+                markSpec.alpha === undefined ? 1 : markSpec.alpha)
+            : base.clone();
+        const markFreq = kind === MARK.ZEBRA ? markSpec.count * 0.55
+            : kind === MARK.TIGER ? markSpec.count * 0.62
+                : kind === MARK.RETICULATED ? 2.1
+                    : kind === MARK.SPOTS ? 3.4 : 1;
+        b.channel('aMark', 4, [0, 0, 0, MARK.NONE]);
+        b.channel('aMarkPos', 4, [0, 0, 0, 0]);
 
         const iBody = rig.index.body;
         const iNeck = rig.index.neck;
@@ -331,7 +428,11 @@
         const noseR = Math.max(mz.width, mz.height) * 0.11 * PX;
         const mouthR = mz.width * 0.55 * PX;
 
-        const skinColour = (x, y, z) => {
+        /**
+         * What part of the skin a point is: the region decides both its base colour
+         * and whether the hide pattern is drawn over it.
+         */
+        const regionOf = (x, y, z) => {
             /*
              * Nostrils and a mouth line.
              *
@@ -342,12 +443,12 @@
              * dots.
              */
             if (Math.hypot(x - noseX, (y - noseY) * 1.2, Math.abs(z) - noseSpread) < noseR) {
-                return _col.copy(eyeCol);
+                return 'nostril';
             }
             if (x > headPos.x + mx - mz.length * 0.5 * PX &&
                 Math.abs(y - jawY - mz.height * 0.30 * PX) < mz.height * 0.07 * PX &&
                 Math.abs(z) < mouthR) {
-                return _col.copy(eyeCol).lerp(muzzleCol, 0.35);
+                return 'mouth';
             }
 
             /*
@@ -361,14 +462,14 @@
             const ex = (x - (headPos.x + mx)) / (mz.length * 0.5 * PX);
             const ey = (y - (headPos.y + my)) / (mz.height * 0.5 * PX);
             const ez = z / (mz.width * 0.5 * PX);
-            if (ex * ex + ey * ey + ez * ez < 1.2) return _col.copy(muzzleCol);
+            if (ex * ex + ey * ey + ez * ez < 1.2) return 'muzzle';
 
             if (spec.ruff) {
                 // Wide enough to take in the lumps, or the mane is a dark collar with a
                 // pale fringe of its own edge.
                 const dr = Math.hypot(x - (headPos.x - spec.ruff.radius * 0.30 * PX),
                     y - headPos.y, z);
-                if (dr < spec.ruff.radius * 1.16 * PX) return _col.copy(maneCol);
+                if (dr < spec.ruff.radius * 1.16 * PX) return 'mane';
             }
 
             // A mane rides the crest of the neck: close to the neck line, and above it.
@@ -380,14 +481,31 @@
                 const cy = neckPos.y + (headPos.y - neckPos.y) * t;
                 if (t > 0.02 && t < 0.98 && Math.abs(z) < maneReach && y > cy &&
                     Math.hypot(x - cx, y - cy) < neck.thickBase * 0.6 * PX + maneReach) {
-                    return _col.copy(maneCol);
+                    return 'mane';
                 }
             }
+            return 'hide';
+        };
 
-            if (marks) {
-                return marks((x - bodyPos.x) / bodyRX, (y - bodyPos.y) / bodyRY, z / bodyRZ);
+        const skinColour = (x, y, z) => {
+            switch (regionOf(x, y, z)) {
+                case 'nostril': return _col.copy(eyeCol);
+                case 'mouth': return _col.copy(eyeCol).lerp(muzzleCol, 0.35);
+                case 'muzzle': return _col.copy(muzzleCol);
+                case 'mane': return _col.copy(maneCol);
+                default: return _col.copy(base);
             }
-            return _col.copy(base);
+        };
+
+        /** The hide pattern's channels at a point on the body skin. */
+        const skinChannels = (x, y, z, builder) => {
+            if (regionOf(x, y, z) !== 'hide') {
+                builder.set('aMark', [0, 0, 0, MARK.NONE]);
+                return;
+            }
+            builder.set('aMark', [markCol.r, markCol.g, markCol.b, kind]);
+            builder.set('aMarkPos', [(x - bodyPos.x) / bodyRX, (y - bodyPos.y) / bodyRY,
+                z / bodyRZ, markFreq]);
         };
 
         /*
@@ -444,8 +562,11 @@
             cell: Math.min(bulk * 0.105,
                 Math.max(head.length, head.width, head.height) * 0.20 * PX),
             colorFn: skinColour,
+            channelFn: skinChannels,
             skinned: true
         });
+        // Appendages carry no body pattern unless a part below says otherwise.
+        b.set('aMark', [0, 0, 0, MARK.NONE]);
 
         /* --- Appendages, in the head bone's space ---------------------------- */
         b.bone(iHead).color(base);
@@ -676,29 +797,64 @@
             b.pop();
         }
 
-        /* --- Legs ---------------------------------------------------------------- */
+        /* --- Legs ---------------------------------------------------------------- *
+         *
+         * Each limb is a tapered bone with a muscle mass around its upper segment — a
+         * forearm in front, a gaskin and thigh behind — so a leg swells out of the body
+         * and narrows to the cannon bone and the hoof. Built as uniform tubes they read
+         * as sticks pushed into a barrel. Striped species carry their bands down the
+         * leg; everything else carries the hide's grain.
+         */
+        const legBands = kind === MARK.ZEBRA ? 3.2 : kind === MARK.TIGER ? 1.6 : 0;
         for (let i = 0; i < 4; i++) {
             const front = i < 2;
             const a = front ? legs.front : legs.rear;
             const hipPos = abs('hip' + i);
             const kneePos = abs('knee' + i);
 
+            // Marking coordinates run 0 at the hip to 2 at the hoof, via the knee.
+            const legChannels = (segment) => (lx, ly, lz, builder) => {
+                // A limb's unit tube runs −0.5 at its root to +0.5 at its far end.
+                const t = segment + MathUtils.clamp01(ly + 0.5);
+                if (legBands) {
+                    builder.set('aMark', [markCol.r, markCol.g, markCol.b, MARK.BANDS]);
+                    builder.set('aMarkPos', [0, t, 0, legBands]);
+                } else {
+                    builder.set('aMark', [0, 0, 0, MARK.HIDE]);
+                    builder.set('aMarkPos', [i * 0.37, -0.4 - t * 0.2, 0, 1]);
+                }
+            };
+            const upper = { radial: 8, noCaps: true, channelFn: legChannels(0) };
+            const lower = { radial: 7, noCaps: true, channelFn: legChannels(1) };
+            const joint = { low: true, channelFn: legChannels(0.5) };
+
             b.bone(rig.index['hip' + i]).color(limbCol);
             b.push().translate(hipPos.x, hipPos.y, hipPos.z);
             b.limb(0, 0, 0, 0, -a.upper * PX, 0,
-                legs.thickTop * 0.5 * PX, legs.thickMid * 0.5 * PX, SEG);
+                legs.thickTop * 0.56 * PX, legs.thickMid * 0.5 * PX, upper);
+            // The muscle: heavier behind, where the hind leg drives. Only on legs that
+            // taper — an elephant's or a hippo's is a column already, and a bulge on it
+            // reads as a swollen joint.
+            if (legs.thickTop > legs.thickMid * 1.25) {
+                const bulk = front ? 0.62 : 0.74;
+                b.push().translate(front ? 0.4 * PX : -0.6 * PX, -a.upper * 0.28 * PX, 0)
+                    .sphere(legs.thickTop * bulk * PX, a.upper * 0.42 * PX,
+                        legs.thickTop * bulk * 0.82 * PX, joint)
+                    .pop();
+            }
             // Joint caps are drawn a shade under the bone width. Matching it exactly
             // makes every leg read as a string of beads.
-            b.sphere(legs.thickTop * 0.44 * PX, legs.thickTop * 0.44 * PX,
-                legs.thickTop * 0.44 * PX, LOW);
+            b.sphere(legs.thickTop * 0.5 * PX, legs.thickTop * 0.5 * PX,
+                legs.thickTop * 0.5 * PX, joint);
             b.pop();
 
             b.bone(rig.index['knee' + i]);
             b.push().translate(kneePos.x, kneePos.y, kneePos.z);
-            b.sphere(legs.thickMid * 0.46 * PX, legs.thickMid * 0.46 * PX,
-                legs.thickMid * 0.46 * PX, LOW);
+            b.sphere(legs.thickMid * 0.5 * PX, legs.thickMid * 0.5 * PX,
+                legs.thickMid * 0.5 * PX, joint);
             b.limb(0, 0, 0, 0, -a.lower * PX, 0,
-                legs.thickMid * 0.5 * PX, legs.thickBot * 0.5 * PX, SEG);
+                legs.thickMid * 0.5 * PX, legs.thickBot * 0.5 * PX, lower);
+            b.set('aMark', [0, 0, 0, MARK.NONE]);
             b.color(hoofCol);
             b.push().translate(0, -a.lower * PX, 0)
                 .sphere(legs.hoof * 0.5 * PX, legs.hoof * 0.45 * PX, legs.hoof * 0.5 * PX, LOW)
@@ -785,7 +941,7 @@
             bones.push(bone);
         }
 
-        const mesh = new THREE.SkinnedMesh(entry.geometry, material || R3D.skinnedMaterial());
+        const mesh = new THREE.SkinnedMesh(entry.geometry, material || hideMaterial());
         mesh.add(bones[0]);
         mesh.bind(new THREE.Skeleton(bones));
         mesh.castShadow = true;
@@ -1014,6 +1170,9 @@
         create,
         pose,
         species,
+        hideMaterial,
+        cloneMaterial,
+        MARK,
         BABY_SCALE,
         /**
          * The rig's tallest authored point, in world units — where a condition bar goes.

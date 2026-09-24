@@ -16,7 +16,8 @@
 
     const {
         MathUtils, Config, Ticker, Events,
-        Scene3D, IsoHud, IsoSpecies, Screens, AudioManager, IsoGoals, Overlay2D, R3D
+        Scene3D, IsoHud, IsoSpecies, Screens, AudioManager, IsoGoals, Overlay2D, R3D,
+        PostFX3D
     } = Safari;
 
     const Screen = Screens.Screen;
@@ -61,13 +62,19 @@
                 preserveDrawingBuffer: true
             });
             this.renderer.outputEncoding = THREE.sRGBEncoding;
-            this.renderer.toneMapping = THREE.LinearToneMapping;
             this.renderer.shadowMap.enabled = true;
             this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
+            /*
+             * The finishing pass, one per page like the renderer it draws through. It
+             * decides the renderer's tone mapping: off when it grades the frame itself,
+             * linear when the device cannot run it and the materials must.
+             */
+            this.post = new PostFX3D(this.renderer);
+
             this.overlay = new Overlay2D(refs.overlay);
 
-            this.scene = new Scene3D(this.renderer, (Math.random() * 0xffffff) | 0);
+            this.scene = new Scene3D(this.renderer, (Math.random() * 0xffffff) | 0, this.post);
             this.hud = new IsoHud(this.scene.bus, refs);
             this.hud.bakeMap(this.scene.world);
 
@@ -180,7 +187,7 @@
             if (this.scene) this.scene.dispose();
 
             const seed = (Math.random() * 0xffffff) | 0;
-            this.scene = new Scene3D(this.renderer, seed);
+            this.scene = new Scene3D(this.renderer, seed, this.post);
 
             this.hud.bus = this.scene.bus;
             this.hud._bindEvents();
@@ -539,6 +546,7 @@
             const cam = this.scene.camera;
             const k = this.keys;
             const playing = this.screens.current === Screen.PLAYING;
+            this.post.adapt(dt);
 
             cam.panX = playing ? (k['d'] || k['arrowright'] ? 1 : 0) -
                 (k['a'] || k['arrowleft'] ? 1 : 0) : 0;

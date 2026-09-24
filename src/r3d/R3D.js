@@ -139,17 +139,62 @@
             this.pos = [];
             this.nrm = [];
             this.rgb = [];
+            /**
+             * Texture coordinates. Almost everything is untextured and takes the current
+             * `_uv` point; leaf cards map a rectangle of the foliage atlas.
+             */
+            this.uvs = [];
             this.idx = [];
             this.skinned = !!skinned;
             if (this.skinned) {
                 this.si = [];
                 this.sw = [];
             }
+            /** Per-vertex extra channels, by attribute name: `{size, data, value}`. */
+            this.channels = {};
 
             this._stack = [];
             this._mat = new THREE.Matrix4();
             this._color = new THREE.Color(1, 1, 1);
             this._bone = 0;
+            this._uv = [0.5, 0.5];
+        }
+
+        /**
+         * Declare an extra per-vertex attribute. Every vertex emitted from now on
+         * carries the channel's current value, set with `set()`; vertices emitted
+         * before the declaration are back-filled with `init`.
+         *
+         * @param {string} name Attribute name as the shader sees it.
+         * @param {number} size Components.
+         * @param {Array<number>} init Value for existing and following vertices.
+         */
+        channel(name, size, init) {
+            const data = [];
+            for (let i = 0; i < this.vertexCount; i++) data.push(...init);
+            this.channels[name] = { size, data, value: init.slice() };
+            return this;
+        }
+
+        /** Set a channel's value for everything emitted next. */
+        set(name, value) {
+            this.channels[name].value = value.slice();
+            return this;
+        }
+
+        /** Record one vertex's worth of every channel. Called by each emitter. */
+        _emitChannels() {
+            for (const key in this.channels) {
+                const ch = this.channels[key];
+                for (let i = 0; i < ch.size; i++) ch.data.push(ch.value[i]);
+            }
+        }
+
+        /** Texture coordinate for untextured primitives emitted next. */
+        uv(u, v) {
+            this._uv[0] = u;
+            this._uv[1] = v;
+            return this;
         }
 
         /* --- Transform stack ------------------------------------------- */
@@ -234,11 +279,14 @@
 
                 const c = colorFn ? colorFn(lx, ly, lz) : this._color;
                 this.rgb.push(c.r, c.g, c.b);
+                this.uvs.push(this._uv[0], this._uv[1]);
 
                 if (this.skinned) {
                     this.si.push(this._bone, 0, 0, 0);
                     this.sw.push(1, 0, 0, 0);
                 }
+                if (opts && opts.channelFn) opts.channelFn(lx, ly, lz, this);
+                this._emitChannels();
             }
 
             if (index) {
@@ -307,6 +355,45 @@
             return this.pop();
         }
 
+        /**
+         * A textured card: a quad centred on a point, in the builder's current space.
+         *
+         * The card spans `right` and `up` (not necessarily orthogonal, not normalised —
+         * their lengths are the half-extents). Its normal is supplied rather than
+         * derived: leaf cards take the normal of the clump they belong to, so a crown
+         * lights as one soft volume instead of as a heap of flat, randomly-facing
+         * squares.
+         *
+         * @param {Array<number>} centre [x, y, z]
+         * @param {Array<number>} right  Half-extent vector along the card's u.
+         * @param {Array<number>} up     Half-extent vector along its v.
+         * @param {Array<number>} normal Shading normal for all four corners.
+         * @param {{u0:number,u1:number,v0:number,v1:number}} rect Atlas rectangle.
+         */
+        card(centre, right, up, normal, rect) {
+            const base = this.pos.length / 3;
+            const corners = [[-1, -1, rect.u0, rect.v0], [1, -1, rect.u1, rect.v0],
+                [1, 1, rect.u1, rect.v1], [-1, 1, rect.u0, rect.v1]];
+            _mn.getNormalMatrix(this._mat);
+            _s.set(normal[0], normal[1], normal[2]).applyMatrix3(_mn).normalize();
+            for (const [a, b, u, v] of corners) {
+                _v.set(centre[0] + right[0] * a + up[0] * b,
+                    centre[1] + right[1] * a + up[1] * b,
+                    centre[2] + right[2] * a + up[2] * b).applyMatrix4(this._mat);
+                this.pos.push(_v.x, _v.y, _v.z);
+                this.nrm.push(_s.x, _s.y, _s.z);
+                this.rgb.push(this._color.r, this._color.g, this._color.b);
+                this.uvs.push(u, v);
+                if (this.skinned) {
+                    this.si.push(this._bone, 0, 0, 0);
+                    this.sw.push(1, 0, 0, 0);
+                }
+                this._emitChannels();
+            }
+            this.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+            return this;
+        }
+
         /* --- Output -------------------------------------------------------- */
 
         /** @returns {THREE.BufferGeometry} */
@@ -315,6 +402,11 @@
             g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
             g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
             g.setAttribute('color', new THREE.Float32BufferAttribute(this.rgb, 3));
+            g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uvs, 2));
+            for (const key in this.channels) {
+                const ch = this.channels[key];
+                g.setAttribute(key, new THREE.Float32BufferAttribute(ch.data, ch.size));
+            }
             if (this.skinned) {
                 g.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(this.si, 4));
                 g.setAttribute('skinWeight', new THREE.Float32BufferAttribute(this.sw, 4));
@@ -339,20 +431,31 @@
      * Everything is vertex-coloured, so the only thing that varies between a boulder
      * and a lion is whether the vertices are driven by a skeleton. Keeping the count
      * this low is what lets the renderer batch and what keeps the shadow pass cheap.
+     *
+     * Phong rather than Lambert, with next to no specular. In this version of Three a
+     * Lambert material is lit per *vertex*, so a coarse mesh shades in visible facets
+     * and nothing finer than a triangle can ever catch the light. Phong with a black
+     * specular is the same diffuse model evaluated per pixel — and the faint sheen left
+     * in is what makes a hide or a painted bonnet read as a surface rather than as
+     * clay.
      */
     let _solid = null;
     let _skinned = null;
 
     function solidMaterial() {
         if (!_solid) {
-            _solid = new THREE.MeshLambertMaterial({ vertexColors: true });
+            _solid = new THREE.MeshPhongMaterial({
+                vertexColors: true, specular: col('#141414'), shininess: 14
+            });
         }
         return _solid;
     }
 
     function skinnedMaterial() {
         if (!_skinned) {
-            _skinned = new THREE.MeshLambertMaterial({ vertexColors: true, skinning: true });
+            _skinned = new THREE.MeshPhongMaterial({
+                vertexColors: true, skinning: true, specular: col('#1c1c1c'), shininess: 20
+            });
         }
         return _skinned;
     }
@@ -389,9 +492,12 @@
             world.waterAt(tx, ty + d) + world.waterAt(tx, ty - d)) / 6;
     }
 
-    /** The same, with pool basins carved out — what the terrain mesh actually is. */
+    /**
+     * The drawn ground: pool beds cut and banks raised to hold a level waterline —
+     * what the terrain mesh actually is, and what everything stands on. See Relief3D.
+     */
     function surfaceY(world, tx, ty) {
-        return world.heightAt(tx, ty) * HEIGHT - waterCarve(world, tx, ty) * WATER_DEPTH;
+        return Safari.Relief3D.of(world).heightAt(tx, ty);
     }
 
     /**

@@ -353,7 +353,7 @@
         hippo: extend(QUADRUPED, {
             id: 'hippo', label: 'Hippo', diet: 'herbivore',
             palette: {
-                base: '#8f7580', limb: '#856b76', hoof: '#4f4046',
+                base: '#85716c', limb: '#7b6863', hoof: '#4f4046',
                 muzzle: '#a88e99', mane: '#6f5a63', eye: '#20161a'
             },
             body: { x: 0, z: 16, length: 27, width: 14, height: 13 },

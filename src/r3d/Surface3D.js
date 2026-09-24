@@ -338,6 +338,9 @@
                     builder.pos.push(wx, wy, wz);
                     builder.nrm.push(grad.x, grad.y, grad.z);
                     builder.rgb.push(c.r, c.g, c.b);
+                    builder.uvs.push(builder._uv[0], builder._uv[1]);
+                    if (opts.channelFn) opts.channelFn(wx, wy, wz, builder);
+                    builder._emitChannels();
 
                     if (builder.skinned) {
                         if (skin) {

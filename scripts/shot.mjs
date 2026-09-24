@@ -104,7 +104,16 @@ const names = which ? [which] : Object.keys(SHOTS);
 
 mkdirSync(OUT, { recursive: true });
 
-const browser = await chromium.launch();
+/*
+ * Render on the real GPU. Headless Chromium otherwise falls back to SwiftShader, a
+ * software rasteriser that is slow and does not look like what a player sees — the
+ * post pass, alpha-to-coverage and the shadow filtering all come out differently. On
+ * Windows that means ANGLE over Direct3D 11; elsewhere the defaults are left alone.
+ */
+const GPU_ARGS = process.platform === 'win32'
+    ? ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist']
+    : ['--enable-gpu', '--ignore-gpu-blocklist'];
+const browser = await chromium.launch({ args: GPU_ARGS });
 let failed = 0;
 
 for (const name of names) {

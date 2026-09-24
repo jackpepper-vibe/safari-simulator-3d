@@ -19,7 +19,7 @@
         MathUtils, Rng, Config, Palettes, EventBus, Events,
         TileWorld, IsoSpecies, IsoEcology, IsoRanger, IsoAnimal, IsoEvents,
         Relocation, TimeSystem, Weather, Vegetation,
-        R3D, Terrain3D, Flora3D, Sky3D, Creature3D, Models3D, Particles3D, CameraRig
+        R3D, Terrain3D, Horizon3D, Flora3D, Sky3D, Creature3D, Models3D, Particles3D, CameraRig
     } = Safari;
 
     /**
@@ -75,9 +75,11 @@
          *   reserves — a new WebGL context per reserve would exhaust the browser's
          *   supply within a dozen runs.
          * @param {number} seed
+         * @param {Safari.PostFX3D} [post] The finishing pass, owned by the shell.
          */
-        constructor(renderer, seed) {
+        constructor(renderer, seed, post) {
             this.renderer = renderer;
+            this.post = post || null;
             this.seed = seed || ((Math.random() * 0xffffff) | 0);
             this.rng = new Rng(this.seed);
 
@@ -131,7 +133,8 @@
             };
 
             /* --- Presentation ----------------------------------------------- */
-            this.terrain = new Terrain3D(this.world, this.scene);
+            this.terrain = new Terrain3D(this.world, this.scene, this.vegetation.props);
+            this.horizon = new Horizon3D(this.world, this.scene, this.seed);
             this.flora = new Flora3D(this.world, this.scene, this.seed,
                 this.terrain.overlay, this.vegetation);
             this.props = this.vegetation.props;
@@ -365,7 +368,7 @@
              * The placement ghost is the same mesh the reserve uses, in a translucent
              * material — so what the player previews is exactly what lands.
              */
-            this.ghostMaterial = R3D.skinnedMaterial().clone();
+            this.ghostMaterial = Creature3D.cloneMaterial();
             this.ghostMaterial.transparent = true;
             this.ghostMaterial.opacity = 0.5;
             this.ghostMaterial.depthWrite = false;
@@ -463,6 +466,7 @@
             this.camera.setViewport(width, height);
             this.renderer.setPixelRatio(dpr);
             this.renderer.setSize(width, height, false);
+            if (this.post) this.post.setSize(width, height, dpr);
         }
 
         /* -------------------------------------------------------------- *
@@ -527,11 +531,13 @@
             this.weather.applyTo(this.light);
             this.wind = this.weather.wind;
 
+            Safari.Shading3D.tick(dt, this.wind);
             this.terrain.update(dt, this.simTime, this.events.fire.burnt);
             this.flora.update(dt, this.wind, this.simTime);
             this.particles.update(dt, this.wind, this._fireCentre());
             this.particles.motes(dt, this.camera, this.light);
             this.sky.update(this.light, this.camera, dt, this.wind);
+            this.terrain.setLighting(this.light, this.sky.keyDirection, this.sky.keyRadiance);
 
             this.stats.agents = this.agents.length;
         }
@@ -655,7 +661,33 @@
          * Frame
          * -------------------------------------------------------------- */
 
+        /**
+         * Refresh the shadow map at most every other frame at 60 Hz.
+         *
+         * The shadow pass is the single most expensive thing drawn, and nothing in the
+         * reserve moves far enough in a sixtieth of a second for a one-frame lag to be
+         * visible. It is always refreshed when the view jumps, though — the light
+         * frames the ground the camera is looking at, so a stale map after a jump
+         * would put shadows in the wrong place.
+         */
+        _scheduleShadows() {
+            const map = this.renderer.shadowMap;
+            map.autoUpdate = false;
+            const rig = this.camera;
+            const s = this._shadowAt || (this._shadowAt = { clock: -1, x: 0, y: 0, dist: 0 });
+            const moved = Math.abs(rig.focusX - s.x) + Math.abs(rig.focusY - s.y) > 0.4 ||
+                Math.abs(rig.dist - s.dist) > 0.5;
+            if (moved || this.clock - s.clock >= 1 / 40 || this.clock < s.clock) {
+                map.needsUpdate = true;
+                s.clock = this.clock;
+                s.x = rig.focusX;
+                s.y = rig.focusY;
+                s.dist = rig.dist;
+            }
+        }
+
         render() {
+            this._scheduleShadows();
             this.sky.follow(this.camera);
             this._syncAnimals();
             this._syncItems();
@@ -665,9 +697,15 @@
 
             // Exposure is the one place the 2D lighting model maps straight onto a
             // renderer setting: surfaces are authored at noon albedo and the hour
-            // scales them, exactly as `Palettes.litColor` did.
-            this.renderer.toneMappingExposure = this.light.exposure;
-            this.renderer.render(this.scene, this.camera.camera);
+            // scales them, exactly as `Palettes.litColor` did. The finishing pass
+            // applies it, with the grade for the hour.
+            if (this.post) {
+                this.post.grade(this.light);
+                this.post.render(this.scene, this.camera.camera);
+            } else {
+                this.renderer.toneMappingExposure = this.light.exposure;
+                this.renderer.render(this.scene, this.camera.camera);
+            }
 
             this.stats.food = this.ecology.food.length;
             this.stats.particles = this.particles.count;
@@ -701,8 +739,8 @@
                 // is going — an allocation per death, and there are not many.
                 const fade = a.fade;
                 if (fade < 1) {
-                    if (mesh.material === R3D.skinnedMaterial()) {
-                        mesh.material = R3D.skinnedMaterial().clone();
+                    if (mesh.material === Creature3D.hideMaterial()) {
+                        mesh.material = Creature3D.cloneMaterial();
                         mesh.material.transparent = true;
                         mesh.material.depthWrite = false;
                     }
@@ -719,7 +757,7 @@
             for (const [animal, mesh] of meshes) {
                 if (mesh.userData.frame === frame) continue;
                 this.scene.remove(mesh);
-                if (mesh.material !== R3D.skinnedMaterial()) mesh.material.dispose();
+                if (mesh.material !== Creature3D.hideMaterial()) mesh.material.dispose();
                 meshes.delete(animal);
             }
 
